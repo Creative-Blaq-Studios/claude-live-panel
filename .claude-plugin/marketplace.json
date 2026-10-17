@@ -1,0 +1,14 @@
+{
+  "name": "claude-live-panel",
+  "description": "The Live panel for Claude Code.",
+  "owner": {
+    "name": "Bophelasiphiwe"
+  },
+  "plugins": [
+    {
+      "name": "live-view",
+      "source": "./",
+      "description": "A Live panel for Claude Code. It shows task progress, what Claude does, the model and effort level, and questions you can answer in the panel."
+    }
+  ]
+}

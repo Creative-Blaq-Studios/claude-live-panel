@@ -1,0 +1,106 @@
+# Live panel for Claude Code
+
+The Live panel is a side panel for Claude Code. It shows what Claude does while it works. You do not have to read long chat output.
+
+The panel works in the Claude Code desktop app and in the terminal.
+
+## What the panel shows
+
+| Part | What it shows |
+| --- | --- |
+| Health signal | One word that tells you the status: Needs you, Failed, Finished, Slow, On track, Working or Ready. |
+| Model and effort | The model that does the work and its effort level. Use the Effort menu to change the level. |
+| Questions | The questions that Claude asks you. Push an answer button or type an answer. |
+| Progress | A bar with one segment for each step of the task. It also shows the current step, the next step and the time left. |
+| Activity | A bar that shows how Claude used the last 10 minutes. It also shows the latest actions. |
+| Action details | Click an action to see the full command or file. You also see the result or the error. |
+| Summary | When Claude stops, the panel can write a timesheet entry or a short report. Push Copy to copy it. |
+| Message box | Type a message to Claude. Push Stop Claude to stop the work. |
+
+Hold the pointer on a part of a bar to see more data.
+
+## Requirements
+
+You must have Claude Code version 2.1.299 or later.
+
+The panel uses the Claude Code mod API. This API can change between releases.
+
+## Install the panel
+
+### Install in the terminal
+
+1. Start Claude Code in a terminal.
+2. Type this command:
+
+   ```
+   /plugin install live-view --marketplace Bophelasiphiwe/claude-live-panel
+   ```
+
+3. When Claude Code asks you to add the marketplace, type `y`.
+4. Select the user scope.
+
+The panel loads in each new session.
+
+### Install in the desktop app
+
+1. Click the plus button next to the message box.
+2. Click Plugins.
+3. Click Add marketplace.
+4. Type `Bophelasiphiwe/claude-live-panel`.
+5. Click Add plugin, then select live-view.
+
+### Load from a local folder
+
+Use this procedure to test a copy of the files.
+
+1. Download or clone this repository to a folder.
+2. Start Claude Code with this command:
+
+   ```
+   claude --plugin-dir <folder>
+   ```
+
+## Use the panel
+
+The panel opens when a session starts. If you close it, type `/live` to open it again.
+
+| Command | Result |
+| --- | --- |
+| `/live` | Opens the panel. |
+| `/live effort high` | Sets the effort level for the next steps. Use `low`, `medium`, `high`, `xhigh` or `max`. |
+| `/live effort session` | Uses the effort level of the session again. |
+| `/live summary` | Writes a timesheet entry for the session. |
+| `/live summary report` | Writes a short report for the session. |
+| `/live summaries off` | Stops the summary offer at the end of each task. Use `on` to start it again. |
+| `/live watch <file>` | Shows the progress of a script from a progress file. |
+| `/live unwatch` | Stops the progress file display. |
+| `/live questions panel` | Shows the questions from Claude in the panel. This is the default. |
+| `/live questions dialog` | Shows the questions from Claude in the usual dialog. |
+| `/live autoopen off` | Stops the panel from opening when a session starts. Use `on` to start it again. |
+
+The panel keeps your settings for all sessions.
+
+## Show the progress of a script
+
+A script can write a JSON progress file. The panel reads the file one time each second.
+
+```json
+{
+  "title": "Test run",
+  "steps": [
+    { "title": "Build the app", "status": "done" },
+    { "title": "Run the tests", "status": "active" },
+    { "title": "Send the report", "status": "pending" }
+  ]
+}
+```
+
+The `status` value must be `done`, `active`, `pending` or `failed`.
+
+Type `/live watch <path to the file>` to show the progress.
+
+## Remove the panel
+
+1. In a terminal session, type `/plugin`.
+2. Select live-view.
+3. Select Uninstall.
