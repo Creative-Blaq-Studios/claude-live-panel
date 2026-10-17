@@ -30,8 +30,6 @@ The panel uses the Claude Code mod API. This API can change between releases.
 
 ## Install the panel
 
-This repository is private. To install the panel, you must have read access to it on GitHub. Your computer must also have a GitHub credential for git, for example from `gh auth login` and `gh auth setup-git`.
-
 ### Install in the terminal
 
 1. Start Claude Code in a terminal.
