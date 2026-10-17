@@ -108,3 +108,7 @@ Type `/live watch <path to the file>` to show the progress.
 1. In a terminal session, type `/plugin`.
 2. Select live-view.
 3. Select Uninstall.
+
+## License
+
+The panel uses the MIT License. Refer to the LICENSE file.
