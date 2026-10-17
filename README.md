@@ -17,10 +17,17 @@ The panel works in the Claude Code desktop app and in the terminal.
 | Where Claude worked | The files that Claude created, edited or read. Click a file to see the actions on that file. |
 | Activity | A bar that shows how Claude used the last 10 minutes. It also shows the latest actions. |
 | Action details | Click an action to see the full command or file. You also see the result or the error. |
-| Recap | When Claude stops, the panel can write a recap. Select Summary, What changed or What's next. The recap uses ASD-STE100 Simplified Technical English. Push Copy to copy it. |
+| Recap | When Claude stops, the panel can write a recap. Select Summary, What changed or What's next. The recap uses ASD-STE100 Simplified Technical English. Push Copy to copy it, or push Open full view to read it in a tab. |
+| Checkpoints | Push Pause and save checkpoint to stop Claude and save the status. The checkpoint has a short recap and a snapshot of the panel. Push Continue from here to start again from it. |
 | Message box | Type a message to Claude. Push Stop Claude to stop the work. |
 
 Hold the pointer on a part of a bar to see more data.
+
+## Checkpoints and recaps
+
+A checkpoint divides the session into sections. After a checkpoint, a recap tells only about the work after that checkpoint. Push Whole session to get a recap of all of the session.
+
+The panel keeps the checkpoints for each project. When you start a new session in the same project, the panel shows the last checkpoint. Push Continue from here to continue the work.
 
 ## Requirements
 
@@ -70,11 +77,14 @@ The panel opens when a session starts. If you close it, type `/live` to open it 
 | Command | Result |
 | --- | --- |
 | `/live` | Opens the panel. |
+| `/live pause` | Stops Claude and saves a checkpoint. |
+| `/live checkpoint` | Saves a checkpoint and does not stop Claude. |
 | `/live effort high` | Sets the effort level for the next steps. Use `low`, `medium`, `high`, `xhigh` or `max`. |
 | `/live effort session` | Uses the effort level of the session again. |
 | `/live summary` | Writes a summary of the session. |
 | `/live summary changes` | Writes a list of the changes in the session. |
 | `/live summary next` | Writes a list of the work that is left and the decisions for you. |
+| `/live summary all` | Writes a summary of all of the session. You can add `all` to the other recap commands too. |
 | `/live summaries off` | Stops the recap offer at the end of each task. Use `on` to start it again. |
 | `/live watch <file>` | Shows the progress of a script from a progress file. |
 | `/live unwatch` | Stops the progress file display. |

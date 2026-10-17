@@ -70,7 +70,31 @@ export type QuestionMode = 'panel' | 'dialog'
  * session's own history: a summary, what changed, or what's next.
  */
 export type SummaryKind = 'summary' | 'changes' | 'next'
-export type Summary = { kind: SummaryKind; status: 'offer' | 'loading' | 'ready' | 'error'; text: string; at: number }
+export type RecapScope = 'since' | 'all'
+export type Summary = { kind: SummaryKind; status: 'offer' | 'loading' | 'ready' | 'error'; text: string; at: number; scope?: RecapScope }
+
+/** What the panel showed when a checkpoint was saved. */
+export type Snapshot = {
+  planTitle: string
+  steps: { title: string; status: StepStatus }[]
+  filesChanged: string[]
+  actions: number
+  health: string
+}
+
+/**
+ * A saved point in the session: a short recap of the work since the
+ * previous checkpoint, and a snapshot of the panel at that moment.
+ */
+export type Checkpoint = {
+  id: string
+  at: number
+  /** When the work this checkpoint covers began: the previous checkpoint, or the session start. */
+  since: number
+  status: 'writing' | 'ready' | 'error'
+  summary: string
+  snapshot: Snapshot
+}
 
 declare module 'claude-code' {
   interface PluginState {
@@ -89,6 +113,10 @@ declare module 'claude-code' {
       openCall: string
       showDetails: boolean
       openFile: string
+      checkpoints: Checkpoint[]
+      openCheckpoint: string
+      recapScope: RecapScope
+      resume: Checkpoint | null
     }
   }
 }

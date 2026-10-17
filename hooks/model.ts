@@ -285,6 +285,27 @@ export function steClean(text: string): string {
     .replace(/[\u00A0\u2009\u202F]/g, ' ')
 }
 
+/** What Claude is asked to write when a checkpoint is saved. */
+export const CHECKPOINT_PROMPT =
+  'Write a checkpoint for this session. First write one sentence that tells where the work stands now. ' +
+  'Then write up to 5 short bullets with the work that was done in this section. ' +
+  'End with one line that starts with "Continue with:" and tells the next step. Use fewer than 120 words. '
+
+/** Tells Claude which part of the session to cover: only the work after the last checkpoint. */
+export function sectionNote(last: { at: number; summary: string } | undefined, actions: Call[]): string {
+  if (!last) return ''
+  const time = new Date(last.at).toTimeString().slice(0, 5)
+  const done = actions
+    .slice(-30)
+    .map(c => `- ${c.label}${c.detail ? `: ${clip(c.detail, 80)}` : ''}`)
+    .join('\n')
+  return (
+    `Only cover the work after the last checkpoint, which was saved at ${time}. Do not repeat the work before it. ` +
+    `That checkpoint said: "${clip(last.summary.replace(/\s+/g, ' '), 400)}". ` +
+    (done ? `The actions after it were:\n${done}\n` : 'There were no recorded actions after it. ')
+  )
+}
+
 export const SUMMARY_LABEL: Record<SummaryKind, string> = { summary: 'Summary', changes: 'What changed', next: "What's next" }
 export const SUMMARY_KINDS: SummaryKind[] = ['summary', 'changes', 'next']
 

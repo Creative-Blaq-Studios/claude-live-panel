@@ -1,11 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Ask, Call, EffortLevel, Engine, Feed, Plan, QuestionMode, Step, Summary, SummaryKind, Turn } from '../types'
+import type { Ask, Call, Checkpoint, EffortLevel, Engine, Feed, Plan, QuestionMode, RecapScope, Snapshot, Step, Summary, SummaryKind, Turn } from '../types'
 import type { Tone } from './model'
 import {
   activityShares,
   answerText,
+  CHECKPOINT_PROMPT,
   choiceFromWrapUp,
   classify,
   clip,
@@ -21,6 +22,8 @@ import {
   parseQuestions,
   planFromTool,
   replyFromText,
+  sectionNote,
+  STE_RULES,
   places,
   SUMMARY_KINDS,
   SUMMARY_LABEL,
@@ -50,6 +53,10 @@ const effortChoice = atom({ plugin: 'live-view', key: 'effortChoice' } as const,
 const openCall = atom({ plugin: 'live-view', key: 'openCall' } as const, '')
 const showDetails = atom({ plugin: 'live-view', key: 'showDetails' } as const, false)
 const openFile = atom({ plugin: 'live-view', key: 'openFile' } as const, '')
+const checkpoints = atom({ plugin: 'live-view', key: 'checkpoints' } as const, [] as Checkpoint[])
+const openCheckpoint = atom({ plugin: 'live-view', key: 'openCheckpoint' } as const, '')
+const recapScope = atom({ plugin: 'live-view', key: 'recapScope' } as const, 'since' as RecapScope)
+const resume = atom({ plugin: 'live-view', key: 'resume' } as const, null as Checkpoint | null)
 
 const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: TITLE }).catch(() => ({ isPlaced: false }))
 /** The recap in a tab of its own, full height, so a long one reads top to bottom. */
@@ -65,11 +72,20 @@ async function send($: EngineInterface, text: string): Promise<void> {
   await $.prompt.submit({ text: body, asUser: true })
 }
 
-/** Asks Claude, off to the side, for a recap of this session: a summary, what changed, or what's next. */
-async function writeSummary($: EngineInterface, kind: SummaryKind): Promise<void> {
+const lastReady = (list: Checkpoint[]) => [...list].reverse().find(c => c.status === 'ready')
+
+/**
+ * Asks Claude, off to the side, for a recap: a summary, what changed, or what's next.
+ * By default it covers only the work since the last checkpoint; 'all' covers the whole session.
+ */
+async function writeSummary($: EngineInterface, kind: SummaryKind, scopeArg?: RecapScope): Promise<void> {
   const at = Date.now()
-  await update($, summary, () => ({ kind, status: 'loading', text: '', at }))
-  const reply = await $.model.fork({ prompt: SUMMARY_PROMPTS[kind] }).catch(() => undefined)
+  const last = lastReady(await read($, checkpoints))
+  const scope: RecapScope = last ? (scopeArg ?? (await read($, recapScope))) : 'all'
+  await update($, summary, (): Summary => ({ kind, status: 'loading', text: '', at, scope }))
+  const section = scope === 'since' && last ? (await read($, calls)).filter(c => c.startedAt >= last.at) : []
+  const prompt = SUMMARY_PROMPTS[kind] + (scope === 'since' && last ? ` ${sectionNote(last, section)}` : '')
+  const reply = await $.model.fork({ prompt }).catch(() => undefined)
   const text = reply?.isAnswered ? steClean(reply.text).trim() : ''
   const why = reply && !reply.isAnswered ? ` (${reply.reason})` : ''
   await update($, summary, (cur): Summary | null =>
@@ -79,10 +95,61 @@ async function writeSummary($: EngineInterface, kind: SummaryKind): Promise<void
   )
 }
 
+/** Where this project's checkpoints are kept between sessions. */
+const checkpointKey = async ($: EngineInterface) => `checkpoints:${await $.session.root().catch(() => 'unknown')}`
+
+/**
+ * Saves a checkpoint: a snapshot of the panel now, and a short recap of the work since the last one.
+ * With `pause`, Claude stops first. The checkpoint is also kept for later sessions in this project.
+ */
+async function saveCheckpoint($: EngineInterface, pause: boolean): Promise<void> {
+  const t = await read($, turn)
+  if (pause && t.isRunning && t.turnId) await $.turn.abort({ turnId: t.turnId }).catch(() => undefined)
+  const list = await read($, checkpoints)
+  const last = lastReady(list)
+  const allCalls = await read($, calls)
+  const p = await read($, plan)
+  const section = allCalls.filter(c => c.startedAt >= (last?.at ?? 0))
+  const now = Date.now()
+  const snapshot: Snapshot = {
+    planTitle: p.title || 'Progress',
+    steps: p.steps.map(st => ({ title: st.title, status: st.status })),
+    filesChanged: places(section).filter(pl => pl.creates + pl.edits > 0).map(pl => pl.name),
+    actions: section.length,
+    health: pause ? 'Paused' : health({ hasAsk: false, isRunning: false, hadTurn: true, steps: p.steps, calls: allCalls }, now).label,
+  }
+  const cp: Checkpoint = { id: `cp${now}`, at: now, since: last?.at ?? (t.startedAt || now), status: 'writing', summary: '', snapshot }
+  await update($, checkpoints, l => [...l, cp].slice(-20))
+  await update($, openCheckpoint, () => cp.id)
+  const reply = await $.model.fork({ prompt: CHECKPOINT_PROMPT + sectionNote(last, section) + STE_RULES }).catch(() => undefined)
+  const text = reply?.isAnswered ? steClean(reply.text).trim() : ''
+  const done: Checkpoint = { ...cp, status: text ? 'ready' : 'error', summary: text || "Couldn't write the recap for this checkpoint. The snapshot is saved." }
+  await update($, checkpoints, l => l.map(c => (c.id === cp.id ? done : c)))
+  if (done.status === 'ready') {
+    const key = await checkpointKey($)
+    const stored = await $.store.get(key).catch(() => undefined)
+    const prev = Array.isArray(stored) ? (stored as Checkpoint[]) : []
+    await $.store.set(key, [...prev, done].slice(-10)).catch(() => undefined)
+  }
+  $.ui.toast(pause ? 'Paused. Checkpoint saved.' : 'Checkpoint saved.')
+}
+
+/** Asks Claude to pick up the work from a checkpoint. */
+async function continueFrom($: EngineInterface, cp: Checkpoint): Promise<void> {
+  await update($, resume, () => null)
+  const when = `${new Date(cp.at).toDateString().slice(4, 10)} ${clock(cp.at).slice(0, 5)}`
+  await send($, `Continue from this checkpoint (saved ${when}). Start with the "Continue with" step.\n\n${cp.summary}`)
+}
+
 /** Copies the summary; where the surface can't, puts it in the message box to copy from there. */
 async function copySummary($: EngineInterface, surface: Parameters<EngineInterface['ui']['copy']>[0]['surface']): Promise<void> {
   const cur = await read($, summary)
-  if (!cur?.text) return
+  if (cur?.text) await copyText($, cur.text, surface)
+}
+
+/** Copies text; where the surface can't, puts it in the message box to copy from there. */
+async function copyText($: EngineInterface, text: string, surface: Parameters<EngineInterface['ui']['copy']>[0]['surface']): Promise<void> {
+  const cur = { text }
   const copied = await $.ui.copy({ text: cur.text, surface }).catch(() => ({ isCopied: false as const }))
   if (copied.isCopied) {
     $.ui.toast('Copied. Paste it wherever you need it.')
@@ -109,7 +176,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'live',
       description: 'Open the Live panel: progress, what Claude is doing, effort level, and questions for you',
-      argumentHint: '[effort low|medium|high|xhigh|max|session | summary [changes|next] | summaries on|off | watch <file> | unwatch | questions panel|dialog]',
+      argumentHint: '[pause | checkpoint | effort low|medium|high|xhigh|max|session | summary [changes|next] [all] | summaries on|off | watch <file> | unwatch | questions panel|dialog]',
     })
     const savedMode = await $.store.get('mode').catch(() => undefined)
     if (savedMode === 'panel' || savedMode === 'dialog') await update($, mode, () => savedMode)
@@ -119,6 +186,10 @@ export const register: Register = on => {
     }
     const savedFeed = await $.store.get('feedPath').catch(() => undefined)
     if (typeof savedFeed === 'string' && savedFeed !== '') await update($, feed, () => ({ ...EMPTY_FEED, path: savedFeed, error: 'waiting for the file' }))
+    const stored = await $.store.get(await checkpointKey($)).catch(() => undefined)
+    if (Array.isArray(stored) && stored.length > 0 && (await read($, checkpoints)).length === 0) {
+      await update($, resume, () => stored[stored.length - 1] as Checkpoint)
+    }
     const autoOpen = await $.store.get('autoOpen').catch(() => undefined)
     if (autoOpen !== false) void openPane($)
 
@@ -172,10 +243,17 @@ export const register: Register = on => {
       if (arg === 'off') await update($, summary, () => null)
       return { text: `The Live panel will ${arg === 'on' ? '' : 'no longer '}offer a copyable recap when Claude finishes or pauses.` }
     }
-    if (verb === 'summary' && (arg === '' || arg === 'changes' || arg === 'next')) {
+    if (verb === 'summary') {
+      const words = arg.split(/\s+/).filter(Boolean)
+      const kind: SummaryKind = words.includes('changes') ? 'changes' : words.includes('next') ? 'next' : 'summary'
       await openPane($)
-      void writeSummary($, arg === '' ? 'summary' : arg)
-      return { text: 'Writing it in the Live panel.' }
+      await writeSummary($, kind, words.includes('all') ? 'all' : undefined)
+      return { text: `${SUMMARY_LABEL[kind]} is ready in the Live panel.` }
+    }
+    if (verb === 'checkpoint' || verb === 'pause') {
+      await openPane($)
+      await saveCheckpoint($, verb === 'pause')
+      return { text: verb === 'pause' ? 'Paused. The checkpoint is in the Live panel.' : 'The checkpoint is in the Live panel.' }
     }
     if (verb === 'autoopen' && (arg === 'on' || arg === 'off')) {
       await $.store.set('autoOpen', arg === 'on').catch(() => undefined)
@@ -200,6 +278,7 @@ export const register: Register = on => {
       await update($, turn, () => ({ isRunning: true, turnId: e.turnId, startedAt: Date.now(), endedAt: 0, model }))
       await update($, ask, a => (a && a.source !== 'question' ? null : a))
       await update($, summary, cur => (cur?.status === 'offer' ? null : cur))
+      await update($, resume, () => null)
     }
     return next(e)
   })
@@ -331,6 +410,11 @@ export const register: Register = on => {
     const open = await read($, openCall)
     const expanded = await read($, showDetails)
     const fileOpen = await read($, openFile)
+    const cps = await read($, checkpoints)
+    const cpOpen = await read($, openCheckpoint)
+    const scopeNow = await read($, recapScope)
+    const back = await read($, resume)
+    const lastCp = lastReady(cps)
     await read($, tick)
     const now = Date.now()
     const cols = Math.max(28, (e.props as { bodyColumns?: number }).bodyColumns ?? e.viewport?.columns ?? 48)
@@ -441,6 +525,14 @@ export const register: Register = on => {
           <Box flexDirection="column">
             <Text bold>Want a recap?</Text>
             <Text dimColor>Pick one. You can copy it anywhere.</Text>
+            {lastCp ? (
+              <Box flexDirection="row" gap={1} flexWrap="wrap">
+                <Text dimColor>Covers: {scopeNow === 'since' ? `the work since the checkpoint at ${clock(lastCp.at).slice(0, 5)}` : 'the whole session'}</Text>
+                <Button key="sum-scope" plain dimColor onPress={() => update($, recapScope, v => (v === 'since' ? 'all' : 'since'))}>
+                  {scopeNow === 'since' ? 'Use the whole session' : 'Use since the last checkpoint'}
+                </Button>
+              </Box>
+            ) : null}
             <Box flexDirection="row" gap={1} flexWrap="wrap">
               <Button key="sum-summary" variant="primary" onPress={() => writeSummary($, 'summary')}>Summary</Button>
               <Button key="sum-changes" onPress={() => writeSummary($, 'changes')}>What changed</Button>
@@ -453,13 +545,15 @@ export const register: Register = on => {
         {sum.status === 'ready' || sum.status === 'error' ? (
           <Box flexDirection="column">
             <Text bold>{SUMMARY_LABEL[sum.kind]}</Text>
+            {lastCp ? <Text dimColor>{sum.scope === 'since' ? `Covers the work since the checkpoint at ${clock(lastCp.at).slice(0, 5)}.` : 'Covers the whole session.'}</Text> : null}
             {sum.status === 'ready' ? <Markdown key="sum-text" text={sum.text} /> : <Text color={PAL.failed}>{sum.text}</Text>}
             <Box flexDirection="row" gap={1} flexWrap="wrap">
               {sum.status === 'ready' ? <Button key="sum-copy" variant="primary" onPress={press => copySummary($, press.surface)}>Copy</Button> : null}
               {sum.status === 'ready' ? <Button key="sum-full" onPress={() => openRecap($)}>Open full view</Button> : null}
-              <Button key="sum-again" onPress={() => writeSummary($, sum.kind)}>{sum.status === 'error' ? 'Try again' : 'Rewrite'}</Button>
+              <Button key="sum-again" onPress={() => writeSummary($, sum.kind, sum.scope)}>{sum.status === 'error' ? 'Try again' : 'Rewrite'}</Button>
+              {lastCp && sum.scope === 'since' ? <Button key="sum-whole" onPress={() => writeSummary($, sum.kind, 'all')}>Whole session</Button> : null}
               {otherKinds.map(k => (
-                <Button key={`sum-${k}`} onPress={() => writeSummary($, k)}>{SUMMARY_LABEL[k]}</Button>
+                <Button key={`sum-${k}`} onPress={() => writeSummary($, k, sum.scope)}>{SUMMARY_LABEL[k]}</Button>
               ))}
               <Button key="sum-close" dimColor onPress={() => update($, summary, () => null)}>Close</Button>
             </Box>
@@ -621,6 +715,59 @@ export const register: Register = on => {
       </Box>
     ) : null
 
+    // Checkpoints: pause and save where things stand, recap just that section, pick it up later.
+    const railText = (steps: { status: string }[]) =>
+      steps.slice(0, 40).map(st => (st.status === 'done' ? '█' : st.status === 'active' ? '●' : st.status === 'failed' ? '✕' : '░')).join('')
+    const cpDetail = (cp: Checkpoint) => (
+      <Box key={`cp-detail-${cp.id}`} flexDirection="column" borderStyle="round" borderColor={cp.status === 'error' ? PAL.failed : PAL.done} paddingX={1}>
+        {cp.status === 'writing' ? <Text color={PAL.now}>Writing the recap for this checkpoint…</Text> : <Markdown key={`cp-text-${cp.id}`} text={cp.summary} />}
+        <Text dimColor>Snapshot: {cp.snapshot.health} · {cp.snapshot.steps.filter(st => st.status === 'done').length} of {cp.snapshot.steps.length} steps · {cp.snapshot.actions} actions</Text>
+        {cp.snapshot.steps.length ? <Text color={PAL.done}>{railText(cp.snapshot.steps)}</Text> : null}
+        {cp.snapshot.filesChanged.length ? <Text dimColor wrap="wrap">Files changed: {cp.snapshot.filesChanged.slice(0, 8).join(', ')}{cp.snapshot.filesChanged.length > 8 ? ' and more' : ''}</Text> : null}
+        {cp.status === 'ready' ? (
+          <Box flexDirection="row" gap={1} flexWrap="wrap">
+            <Button key={`cp-continue-${cp.id}`} variant="primary" onPress={() => continueFrom($, cp)}>Continue from here</Button>
+            <Button key={`cp-copy-${cp.id}`} onPress={press => copyText($, cp.summary, press.surface)}>Copy</Button>
+          </Box>
+        ) : null}
+      </Box>
+    )
+    const cpBlock = (
+      <Box key="checkpoints" flexDirection="column" marginTop={1}>
+        <Box flexDirection="row" justifyContent="space-between" gap={1}>
+          <Text bold>Checkpoints</Text>
+          <Text dimColor>{cps.length ? `${cps.length} saved` : 'none yet'}</Text>
+        </Box>
+        <Box flexDirection="row" gap={1} flexWrap="wrap">
+          <Button key="cp-save" variant={t.isRunning ? 'primary' : 'secondary'} onPress={() => saveCheckpoint($, t.isRunning)}>
+            {t.isRunning ? 'Pause and save checkpoint' : 'Save checkpoint'}
+          </Button>
+        </Box>
+        {cps.length === 0 ? <Text dimColor>Save a checkpoint to recap this part of the work and continue from it later.</Text> : null}
+        {[...cps].reverse().slice(0, 4).map(cp => (
+          <Box key={`cp-row-${cp.id}`} flexDirection="column">
+            <Button key={`cp-${cp.id}`} plain onPress={() => update($, openCheckpoint, cur => (cur === cp.id ? '' : cp.id))}>
+              <Text color={cp.status === 'ready' ? PAL.done : cp.status === 'writing' ? PAL.now : PAL.failed}>◆ </Text>
+              #{cps.indexOf(cp) + 1} · {clock(cp.at).slice(0, 5)}
+              <Text dimColor> · {cp.snapshot.steps.filter(st => st.status === 'done').length}/{cp.snapshot.steps.length} steps · {cp.snapshot.filesChanged.length} files changed {cpOpen === cp.id ? '▾' : '▸'}</Text>
+            </Button>
+            {cpOpen === cp.id ? cpDetail(cp) : null}
+          </Box>
+        ))}
+      </Box>
+    )
+    const resumeCard = back && !t.isRunning ? (
+      <Box key="resume" flexDirection="column" borderStyle="round" borderColor={PAL.now} paddingX={1} marginTop={1}>
+        <Text bold color={PAL.now}>Last time, you stopped here</Text>
+        <Text dimColor>Checkpoint from {new Date(back.at).toDateString().slice(4, 10)} at {clock(back.at).slice(0, 5)}</Text>
+        <Markdown key="resume-text" text={back.summary} />
+        <Box flexDirection="row" gap={1} flexWrap="wrap">
+          <Button key="resume-continue" variant="primary" onPress={() => continueFrom($, back)}>Continue from here</Button>
+          <Button key="resume-dismiss" dimColor onPress={() => update($, resume, () => null)}>Dismiss</Button>
+        </Box>
+      </Box>
+    ) : null
+
     // In the "needs you" and "finished" states activity folds away behind one button.
     const activityToggle = (
       <Button key="toggle-activity" plain dimColor onPress={() => update($, showDetails, v => !v)}>
@@ -663,6 +810,7 @@ export const register: Register = on => {
       return (
         <Box flexDirection="column">
           {header}
+          {resumeCard}
           <Box flexDirection="column" marginTop={1}>
             <Text bold>Ready when you are</Text>
             <Text dimColor>Send a message to start. Progress, activity and any questions for you will show here.</Text>
@@ -692,7 +840,9 @@ export const register: Register = on => {
           <Box key="finished" flexDirection="column" marginTop={1}>
             <Text bold color={PAL.done}>Task finished · {duration(t.endedAt - t.startedAt)}</Text>
           </Box>
+          {resumeCard}
           {summaryCard}
+          {cpBlock}
           {whereBlock}
           {planBlock}
           {script}
@@ -709,6 +859,7 @@ export const register: Register = on => {
         {script}
         {whereBlock}
         {activity}
+        {cpBlock}
         {summaryCard}
         {talk}
       </Box>
