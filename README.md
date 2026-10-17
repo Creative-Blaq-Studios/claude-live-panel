@@ -30,13 +30,15 @@ The panel uses the Claude Code mod API. This API can change between releases.
 
 ## Install the panel
 
+This repository is private. To install the panel, you must have read access to it on GitHub. Your computer must also have a GitHub credential for git, for example from `gh auth login` and `gh auth setup-git`.
+
 ### Install in the terminal
 
 1. Start Claude Code in a terminal.
 2. Type this command:
 
    ```
-   /plugin install live-view --marketplace Bophelasiphiwe/claude-live-panel
+   /plugin install live-view --marketplace Creative-Blaq-Studios/claude-live-panel
    ```
 
 3. When Claude Code asks you to add the marketplace, type `y`.
@@ -49,7 +51,7 @@ The panel loads in each new session.
 1. Click the plus button next to the message box.
 2. Click Plugins.
 3. Click Add marketplace.
-4. Type `Bophelasiphiwe/claude-live-panel`.
+4. Type `Creative-Blaq-Studios/claude-live-panel`.
 5. Click Add plugin, then select live-view.
 
 ### Load from a local folder

@@ -3,6 +3,6 @@
   "version": "1.0.0",
   "description": "A Live panel for Claude Code. It shows task progress, what Claude does, the model and effort level, and questions you can answer in the panel.",
   "author": { "name": "Bophelasiphiwe" },
-  "repository": "https://github.com/Bophelasiphiwe/claude-live-panel",
+  "repository": "https://github.com/Creative-Blaq-Studios/claude-live-panel",
   "types": "./types/index.d.ts"
 }
