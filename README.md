@@ -6,6 +6,8 @@ The panel gives you an overview first. Hold the pointer on an item or click it t
 
 The panel works in the Claude Code desktop app and in the terminal.
 
+The Claude Code extension for VS Code cannot show the panel at this time. In VS Code, the `/live summary` and `/live pause` commands write the text in the chat.
+
 ## What the panel shows
 
 | Part | What it shows |

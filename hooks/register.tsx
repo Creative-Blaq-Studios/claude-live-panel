@@ -78,7 +78,7 @@ const lastReady = (list: Checkpoint[]) => [...list].reverse().find(c => c.status
  * Asks Claude, off to the side, for a recap: a summary, what changed, or what's next.
  * By default it covers only the work since the last checkpoint; 'all' covers the whole session.
  */
-async function writeSummary($: EngineInterface, kind: SummaryKind, scopeArg?: RecapScope): Promise<void> {
+async function writeSummary($: EngineInterface, kind: SummaryKind, scopeArg?: RecapScope): Promise<Summary | null> {
   const at = Date.now()
   const last = lastReady(await read($, checkpoints))
   const scope: RecapScope = last ? (scopeArg ?? (await read($, recapScope))) : 'all'
@@ -88,7 +88,7 @@ async function writeSummary($: EngineInterface, kind: SummaryKind, scopeArg?: Re
   const reply = await $.model.fork({ prompt }).catch(() => undefined)
   const text = reply?.isAnswered ? steClean(reply.text).trim() : ''
   const why = reply && !reply.isAnswered ? ` (${reply.reason})` : ''
-  await update($, summary, (cur): Summary | null =>
+  return update($, summary, (cur): Summary | null =>
     cur && cur.at === at
       ? { ...cur, status: text ? 'ready' : 'error', text: text || `Couldn't write it this time${why}. Try again in a moment.` }
       : cur,
@@ -102,7 +102,7 @@ const checkpointKey = async ($: EngineInterface) => `checkpoints:${await $.sessi
  * Saves a checkpoint: a snapshot of the panel now, and a short recap of the work since the last one.
  * With `pause`, Claude stops first. The checkpoint is also kept for later sessions in this project.
  */
-async function saveCheckpoint($: EngineInterface, pause: boolean): Promise<void> {
+async function saveCheckpoint($: EngineInterface, pause: boolean): Promise<Checkpoint> {
   const t = await read($, turn)
   if (pause && t.isRunning && t.turnId) await $.turn.abort({ turnId: t.turnId }).catch(() => undefined)
   const list = await read($, checkpoints)
@@ -132,6 +132,7 @@ async function saveCheckpoint($: EngineInterface, pause: boolean): Promise<void>
     await $.store.set(key, [...prev, done].slice(-10)).catch(() => undefined)
   }
   $.ui.toast(pause ? 'Paused. Checkpoint saved.' : 'Checkpoint saved.')
+  return done
 }
 
 /** Asks Claude to pick up the work from a checkpoint. */
@@ -246,14 +247,22 @@ export const register: Register = on => {
     if (verb === 'summary') {
       const words = arg.split(/\s+/).filter(Boolean)
       const kind: SummaryKind = words.includes('changes') ? 'changes' : words.includes('next') ? 'next' : 'summary'
-      await openPane($)
-      await writeSummary($, kind, words.includes('all') ? 'all' : undefined)
+      const opened = await openPane($)
+      const written = await writeSummary($, kind, words.includes('all') ? 'all' : undefined)
+      // Where no panel can be drawn (the VS Code extension today), the recap goes into the chat instead.
+      if (!opened.isPlaced && written) return { text: `${SUMMARY_LABEL[kind]}${written.scope === 'since' ? ' (since the last checkpoint)' : ''}:\n\n${written.text}` }
       return { text: `${SUMMARY_LABEL[kind]} is ready in the Live panel.` }
     }
     if (verb === 'checkpoint' || verb === 'pause') {
-      await openPane($)
-      await saveCheckpoint($, verb === 'pause')
-      return { text: verb === 'pause' ? 'Paused. The checkpoint is in the Live panel.' : 'The checkpoint is in the Live panel.' }
+      const opened = await openPane($)
+      const cp = await saveCheckpoint($, verb === 'pause')
+      const lead = verb === 'pause' ? 'Paused. Checkpoint saved' : 'Checkpoint saved'
+      if (!opened.isPlaced) {
+        const files = cp.snapshot.filesChanged.length ? `\nFiles changed: ${cp.snapshot.filesChanged.join(', ')}` : ''
+        const steps = cp.snapshot.steps.length ? `\nSteps done: ${cp.snapshot.steps.filter(st => st.status === 'done').length} of ${cp.snapshot.steps.length}` : ''
+        return { text: `${lead} at ${clock(cp.at).slice(0, 5)}.${steps}${files}\n\n${cp.summary}` }
+      }
+      return { text: `${lead}. It is in the Live panel.` }
     }
     if (verb === 'autoopen' && (arg === 'on' || arg === 'off')) {
       await $.store.set('autoOpen', arg === 'on').catch(() => undefined)
