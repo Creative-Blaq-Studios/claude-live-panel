@@ -247,18 +247,42 @@ export function running(calls: Call[]): Call[] {
   return calls.filter(c => c.endedAt === undefined)
 }
 
-/** What Claude is asked to write for each kind of copyable recap. Plain words for someone who wasn't watching. */
+/** The writing rules every recap follows: ASD-STE100 Simplified Technical English, plain characters only. */
+export const STE_RULES =
+  'Write in ASD-STE100 Simplified Technical English. Use simple, common words with one meaning each. ' +
+  'Use the active voice. Keep each sentence to 20 words or fewer. Put one idea in each sentence. ' +
+  'Use the imperative for instructions. Do not use em dashes, en dashes or semicolons. ' +
+  'Use only plain ASCII characters and straight quotes. Use "- " only to start a bullet. No preamble and no closing line.'
+
+/** What Claude is asked to write for each kind of copyable recap, for someone who was not watching. */
 export const SUMMARY_PROMPTS: Record<SummaryKind, string> = {
   summary:
-    'Summarize this session for someone who was not watching. Start with one sentence on what was done and where ' +
-    'it stands now. Then up to 5 short bullets with the main outcomes. Plain words, no jargon, no preamble, under 120 words.',
+    'Write a summary of this session for a person who did not watch it. Start with one sentence that tells what ' +
+    'was done and the status now. Then write up to 5 short bullets with the main results. Use fewer than 120 words. ' +
+    STE_RULES,
   changes:
-    'List what changed in this session: each file or thing that was created, changed or deleted, one short bullet each, ' +
-    'with a few plain words on why. Group the bullets under short headings if there are more than 8. No preamble. ' +
-    'If nothing changed, say so in one line.',
+    'Write a list of the changes in this session. Write one short bullet for each file or item that was created, ' +
+    'changed or deleted. Tell why in a few words. If there are more than 8 bullets, put them under short headings. ' +
+    'If there are no changes, write one sentence that tells this. ' +
+    STE_RULES,
   next:
-    'List what is left to do and any decisions that need the user, as short bullets, most important first. ' +
-    'End with one line that starts "Recommended next step:". Plain words, no preamble, under 120 words.',
+    'Write a list of the work that is not done and the decisions that the user must make. Use short bullets and put ' +
+    'the most important item first. End with one line that starts with "Recommended next step:". Use fewer than 120 words. ' +
+    STE_RULES,
+}
+
+/** Makes a recap plain text: straight quotes, no em or en dashes, no special punctuation. */
+export function steClean(text: string): string {
+  return text
+    .replace(/[\u2018\u2019\u201A\u2032]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u2033]/g, '"')
+    .replace(/\u2026/g, '...')
+    .replace(/\s*[\u2014\u2015]\s*/g, ', ')
+    .replace(/(\d)\s*\u2013\s*(\d)/g, '$1 to $2')
+    .replace(/\s*\u2013\s*/g, ', ')
+    .replace(/^(\s*)[\u2022\u25CF\u25E6\u2023]\s*/gm, '$1- ')
+    .replace(/\s*;\s+([a-z])?/g, (_m, c: string | undefined) => `. ${c ? c.toUpperCase() : ''}`)
+    .replace(/[\u00A0\u2009\u202F]/g, ' ')
 }
 
 export const SUMMARY_LABEL: Record<SummaryKind, string> = { summary: 'Summary', changes: 'What changed', next: "What's next" }

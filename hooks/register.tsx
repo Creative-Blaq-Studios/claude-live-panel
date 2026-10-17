@@ -25,6 +25,7 @@ import {
   SUMMARY_KINDS,
   SUMMARY_LABEL,
   SUMMARY_PROMPTS,
+  steClean,
   timeLeft,
 } from './model'
 import { activitySvg, railSvg } from './svg'
@@ -66,7 +67,7 @@ async function writeSummary($: EngineInterface, kind: SummaryKind): Promise<void
   const at = Date.now()
   await update($, summary, () => ({ kind, status: 'loading', text: '', at }))
   const reply = await $.model.fork({ prompt: SUMMARY_PROMPTS[kind] }).catch(() => undefined)
-  const text = reply?.isAnswered ? reply.text.trim() : ''
+  const text = reply?.isAnswered ? steClean(reply.text).trim() : ''
   const why = reply && !reply.isAnswered ? ` (${reply.reason})` : ''
   await update($, summary, (cur): Summary | null =>
     cur && cur.at === at

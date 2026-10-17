@@ -17,7 +17,7 @@ The panel works in the Claude Code desktop app and in the terminal.
 | Where Claude worked | The files that Claude created, edited or read. Click a file to see the actions on that file. |
 | Activity | A bar that shows how Claude used the last 10 minutes. It also shows the latest actions. |
 | Action details | Click an action to see the full command or file. You also see the result or the error. |
-| Recap | When Claude stops, the panel can write a recap. Select Summary, What changed or What's next. Push Copy to copy it. |
+| Recap | When Claude stops, the panel can write a recap. Select Summary, What changed or What's next. The recap uses ASD-STE100 Simplified Technical English. Push Copy to copy it. |
 | Message box | Type a message to Claude. Push Stop Claude to stop the work. |
 
 Hold the pointer on a part of a bar to see more data.
