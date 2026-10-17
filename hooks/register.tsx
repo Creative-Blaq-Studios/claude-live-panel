@@ -21,6 +21,8 @@ import {
   parseQuestions,
   planFromTool,
   replyFromText,
+  places,
+  SUMMARY_KINDS,
   SUMMARY_LABEL,
   SUMMARY_PROMPTS,
   timeLeft,
@@ -45,6 +47,7 @@ const engine = atom({ plugin: 'live-view', key: 'engine' } as const, { model: ''
 const effortChoice = atom({ plugin: 'live-view', key: 'effortChoice' } as const, '' as EffortLevel | '')
 const openCall = atom({ plugin: 'live-view', key: 'openCall' } as const, '')
 const showDetails = atom({ plugin: 'live-view', key: 'showDetails' } as const, false)
+const openFile = atom({ plugin: 'live-view', key: 'openFile' } as const, '')
 
 const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: TITLE }).catch(() => ({ isPlaced: false }))
 const clock = (ms: number) => new Date(ms).toTimeString().slice(0, 8)
@@ -58,7 +61,7 @@ async function send($: EngineInterface, text: string): Promise<void> {
   await $.prompt.submit({ text: body, asUser: true })
 }
 
-/** Asks Claude, off to the side, for a timesheet entry or a report of this session. */
+/** Asks Claude, off to the side, for a recap of this session: a summary, what changed, or what's next. */
 async function writeSummary($: EngineInterface, kind: SummaryKind): Promise<void> {
   const at = Date.now()
   await update($, summary, () => ({ kind, status: 'loading', text: '', at }))
@@ -102,7 +105,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'live',
       description: 'Open the Live panel: progress, what Claude is doing, effort level, and questions for you',
-      argumentHint: '[effort low|medium|high|xhigh|max|session | summary [timesheet|report] | summaries on|off | watch <file> | unwatch | questions panel|dialog]',
+      argumentHint: '[effort low|medium|high|xhigh|max|session | summary [changes|next] | summaries on|off | watch <file> | unwatch | questions panel|dialog]',
     })
     const savedMode = await $.store.get('mode').catch(() => undefined)
     if (savedMode === 'panel' || savedMode === 'dialog') await update($, mode, () => savedMode)
@@ -163,11 +166,11 @@ export const register: Register = on => {
     if (verb === 'summaries' && (arg === 'on' || arg === 'off')) {
       await $.store.set('summaries', arg === 'on').catch(() => undefined)
       if (arg === 'off') await update($, summary, () => null)
-      return { text: `The Live panel will ${arg === 'on' ? '' : 'no longer '}offer a copyable summary when Claude finishes or pauses.` }
+      return { text: `The Live panel will ${arg === 'on' ? '' : 'no longer '}offer a copyable recap when Claude finishes or pauses.` }
     }
-    if (verb === 'summary' && (arg === 'timesheet' || arg === 'report' || arg === '')) {
+    if (verb === 'summary' && (arg === '' || arg === 'changes' || arg === 'next')) {
       await openPane($)
-      void writeSummary($, arg === 'report' ? 'report' : 'timesheet')
+      void writeSummary($, arg === '' ? 'summary' : arg)
       return { text: 'Writing it in the Live panel.' }
     }
     if (verb === 'autoopen' && (arg === 'on' || arg === 'off')) {
@@ -213,7 +216,7 @@ export const register: Register = on => {
       const wanted = await $.store.get('summaries').catch(() => undefined)
       const waitingOnPanel = (await read($, ask))?.source === 'question'
       if (wanted !== false && !waitingOnPanel) {
-        await update($, summary, (cur): Summary | null => (cur && cur.status !== 'offer' ? cur : { kind: 'timesheet', status: 'offer', text: '', at: Date.now() }))
+        await update($, summary, (cur): Summary | null => (cur && cur.status !== 'offer' ? cur : { kind: 'summary', status: 'offer', text: '', at: Date.now() }))
       }
     }
     return result
@@ -237,7 +240,10 @@ export const register: Register = on => {
     }
 
     const what = classify(tool, input)
-    const entry: Call = { id: e.tool_use_id, ...what, isHelper: !isMain, startedAt: now, input: inputDetail(tool, input) }
+    const file = ['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(tool)
+      ? String(input.file_path ?? input.notebook_path ?? '')
+      : ''
+    const entry: Call = { id: e.tool_use_id, ...what, isHelper: !isMain, startedAt: now, input: inputDetail(tool, input), ...(file ? { target: file } : {}) }
     await update($, calls, list => [...list.filter(c => c.startedAt > now - 30 * 60_000), entry].slice(-80))
     const finish = (isError: boolean, output?: string) =>
       update($, calls, list =>
@@ -298,6 +304,7 @@ export const register: Register = on => {
     const choice = await read($, effortChoice)
     const open = await read($, openCall)
     const expanded = await read($, showDetails)
+    const fileOpen = await read($, openFile)
     await read($, tick)
     const now = Date.now()
     const cols = Math.max(28, (e.props as { bodyColumns?: number }).bodyColumns ?? e.viewport?.columns ?? 48)
@@ -400,30 +407,33 @@ export const register: Register = on => {
       </Box>
     ) : null
 
-    // 3. Finished: the copyable summary offer leads.
-    const other: SummaryKind = sum?.kind === 'report' ? 'timesheet' : 'report'
+    // 3. Finished: a copyable recap leads. Three kinds: summary, what changed, what's next.
+    const otherKinds = SUMMARY_KINDS.filter(k => k !== sum?.kind)
     const summaryCard = sum && state !== 'ask' ? (
       <Box key="summary" flexDirection="column" borderStyle="round" borderColor={PAL.done} paddingX={1} marginTop={1}>
         {sum.status === 'offer' ? (
           <Box flexDirection="column">
-            <Text bold>Want a copyable summary?</Text>
-            <Text dimColor>For your timesheet, or to paste into a report.</Text>
+            <Text bold>Want a recap?</Text>
+            <Text dimColor>Pick one. You can copy it anywhere.</Text>
             <Box flexDirection="row" gap={1} flexWrap="wrap">
-              <Button key="sum-timesheet" variant="primary" onPress={() => writeSummary($, 'timesheet')}>Timesheet entry</Button>
-              <Button key="sum-report" onPress={() => writeSummary($, 'report')}>Short report</Button>
+              <Button key="sum-summary" variant="primary" onPress={() => writeSummary($, 'summary')}>Summary</Button>
+              <Button key="sum-changes" onPress={() => writeSummary($, 'changes')}>What changed</Button>
+              <Button key="sum-next" onPress={() => writeSummary($, 'next')}>What's next</Button>
               <Button key="sum-no" dimColor onPress={() => update($, summary, () => null)}>Not now</Button>
             </Box>
           </Box>
         ) : null}
-        {sum.status === 'loading' ? <Text color={PAL.now}>Writing your {SUMMARY_LABEL[sum.kind].toLowerCase()}…</Text> : null}
+        {sum.status === 'loading' ? <Text color={PAL.now}>Writing: {SUMMARY_LABEL[sum.kind]}…</Text> : null}
         {sum.status === 'ready' || sum.status === 'error' ? (
           <Box flexDirection="column">
             <Text bold>{SUMMARY_LABEL[sum.kind]}</Text>
-            {sum.status === 'ready' ? <Code source={sum.text} language={sum.kind === 'report' ? 'markdown' : 'text'} /> : <Text color={PAL.failed}>{sum.text}</Text>}
+            {sum.status === 'ready' ? <Code source={sum.text} language="markdown" /> : <Text color={PAL.failed}>{sum.text}</Text>}
             <Box flexDirection="row" gap={1} flexWrap="wrap">
               {sum.status === 'ready' ? <Button key="sum-copy" variant="primary" onPress={press => copySummary($, press.surface)}>Copy</Button> : null}
               <Button key="sum-again" onPress={() => writeSummary($, sum.kind)}>{sum.status === 'error' ? 'Try again' : 'Rewrite'}</Button>
-              <Button key="sum-other" onPress={() => writeSummary($, other)}>{SUMMARY_LABEL[other]} instead</Button>
+              {otherKinds.map(k => (
+                <Button key={`sum-${k}`} onPress={() => writeSummary($, k)}>{SUMMARY_LABEL[k]}</Button>
+              ))}
               <Button key="sum-close" dimColor onPress={() => update($, summary, () => null)}>Close</Button>
             </Box>
           </Box>
@@ -500,6 +510,18 @@ export const register: Register = on => {
         {!c.output && c.endedAt === undefined ? <Text dimColor>Its result will show here when it finishes.</Text> : null}
       </Box>
     )
+    // One clickable line per action; click it to open its detail beneath. `scope` keeps keys apart where a call shows twice.
+    const actionRow = (c: Call, scope: string) => (
+      <Box key={`${scope}-row-${c.id}`} flexDirection="column">
+        <Button key={`${scope}-call-${c.id}`} plain dimColor={c.endedAt !== undefined && !c.isError} onPress={() => update($, openCall, cur => (cur === c.id ? '' : c.id))}>
+          <Text color={c.endedAt === undefined ? PAL.now : c.isError ? PAL.failed : PAL.done}>{c.endedAt === undefined ? '●' : c.isError ? '✕' : '✓'} </Text>
+          {c.isHelper ? 'Helper: ' : ''}{c.label}
+          {c.detail ? <Text dimColor> · {clip(c.detail, Math.max(10, cols - c.label.length - 18))}</Text> : null}
+          <Text dimColor> {duration((c.endedAt ?? now) - c.startedAt)} {open === c.id ? '▾' : '▸'}</Text>
+        </Button>
+        {open === c.id ? detail(c) : null}
+      </Box>
+    )
     const activity = (
       <Box key="activity" flexDirection="column" marginTop={1}>
         <Box flexDirection="row" justifyContent="space-between" gap={1}>
@@ -528,17 +550,7 @@ export const register: Register = on => {
         ) : (
           <Text dimColor>Nothing yet. Actions show here as Claude works.</Text>
         )}
-        {recent.map(c => (
-          <Box key={`row-${c.id}`} flexDirection="column">
-            <Button key={`call-${c.id}`} plain dimColor={c.endedAt !== undefined && !c.isError} onPress={() => update($, openCall, cur => (cur === c.id ? '' : c.id))}>
-              <Text color={c.endedAt === undefined ? PAL.now : c.isError ? PAL.failed : PAL.done}>{c.endedAt === undefined ? '●' : c.isError ? '✕' : '✓'} </Text>
-              {c.isHelper ? 'Helper: ' : ''}{c.label}
-              {c.detail ? <Text dimColor> · {clip(c.detail, Math.max(10, cols - c.label.length - 18))}</Text> : null}
-              <Text dimColor> {duration((c.endedAt ?? now) - c.startedAt)} {open === c.id ? '▾' : '▸'}</Text>
-            </Button>
-            {open === c.id ? detail(c) : null}
-          </Box>
-        ))}
+        {recent.map(c => actionRow(c, 'recent'))}
         {list.length > 4 ? (
           <Button key="more" plain dimColor onPress={() => update($, showDetails, v => !v)}>
             {expanded ? 'Show fewer actions' : `Show all recent actions (${Math.min(list.length, 20)})`}
@@ -547,6 +559,40 @@ export const register: Register = on => {
         <Text dimColor>Click an action to see exactly what ran and what came back.</Text>
       </Box>
     )
+
+    // Where Claude worked: the files it created, edited or read. Click a file for every action on it.
+    const where = places(list)
+    const changedCount = where.filter(pl => pl.creates + pl.edits > 0).length
+    const opened = where.find(pl => pl.path === fileOpen)
+    const placeColor = (pl: { creates: number; edits: number }) => (pl.creates ? PAL.done : pl.edits ? '#C9A24A' : '#6E7F8D')
+    const whereBlock = where.length ? (
+      <Box key="where" flexDirection="column" marginTop={1}>
+        <Box flexDirection="row" justifyContent="space-between" gap={1}>
+          <Text bold>Where Claude worked</Text>
+          <Text dimColor>{changedCount} changed · {where.length - changedCount} read</Text>
+        </Box>
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+          {where.slice(0, 10).map(pl => (
+            <Button key={`place-${pl.path}`} plain onPress={() => update($, openFile, cur => (cur === pl.path ? '' : pl.path))}>
+              <Text color={placeColor(pl)}>{pl.creates ? '+' : pl.edits ? '✎' : '○'}</Text> {pl.name}
+              {pl.creates + pl.edits > 1 ? <Text dimColor> ×{pl.creates + pl.edits}</Text> : null}
+            </Button>
+          ))}
+        </Box>
+        {where.length > 10 ? <Text dimColor>and {where.length - 10} more</Text> : null}
+        <Text dimColor>+ created  ✎ edited  ○ read. Click a file to see what Claude did with it.</Text>
+        {opened ? (
+          <Box key="file-detail" flexDirection="column" borderStyle="round" borderColor={placeColor(opened)} paddingX={1}>
+            <Text bold>{opened.name}</Text>
+            <Text dimColor wrap="wrap">{opened.path}</Text>
+            <Text dimColor>
+              {[opened.creates ? `created ${opened.creates}×` : '', opened.edits ? `edited ${opened.edits}×` : '', opened.reads ? `read ${opened.reads}×` : ''].filter(Boolean).join(' · ')}
+            </Text>
+            {list.filter(c => c.target === opened.path).slice(-8).reverse().map(c => actionRow(c, 'file'))}
+          </Box>
+        ) : null}
+      </Box>
+    ) : null
 
     // In the "needs you" and "finished" states activity folds away behind one button.
     const activityToggle = (
@@ -620,6 +666,7 @@ export const register: Register = on => {
             <Text bold color={PAL.done}>Task finished · {duration(t.endedAt - t.startedAt)}</Text>
           </Box>
           {summaryCard}
+          {whereBlock}
           {planBlock}
           {script}
           {activityToggle}
@@ -633,6 +680,7 @@ export const register: Register = on => {
         {header}
         {planBlock}
         {script}
+        {whereBlock}
         {activity}
         {summaryCard}
         {talk}

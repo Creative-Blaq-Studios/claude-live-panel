@@ -2,6 +2,8 @@
 
 The Live panel is a side panel for Claude Code. It shows what Claude does while it works. You do not have to read long chat output.
 
+The panel gives you an overview first. Hold the pointer on an item or click it to see more details.
+
 The panel works in the Claude Code desktop app and in the terminal.
 
 ## What the panel shows
@@ -12,9 +14,10 @@ The panel works in the Claude Code desktop app and in the terminal.
 | Model and effort | The model that does the work and its effort level. Use the Effort menu to change the level. |
 | Questions | The questions that Claude asks you. Push an answer button or type an answer. |
 | Progress | A bar with one segment for each step of the task. It also shows the current step, the next step and the time left. |
+| Where Claude worked | The files that Claude created, edited or read. Click a file to see the actions on that file. |
 | Activity | A bar that shows how Claude used the last 10 minutes. It also shows the latest actions. |
 | Action details | Click an action to see the full command or file. You also see the result or the error. |
-| Summary | When Claude stops, the panel can write a timesheet entry or a short report. Push Copy to copy it. |
+| Recap | When Claude stops, the panel can write a recap. Select Summary, What changed or What's next. Push Copy to copy it. |
 | Message box | Type a message to Claude. Push Stop Claude to stop the work. |
 
 Hold the pointer on a part of a bar to see more data.
@@ -69,9 +72,10 @@ The panel opens when a session starts. If you close it, type `/live` to open it 
 | `/live` | Opens the panel. |
 | `/live effort high` | Sets the effort level for the next steps. Use `low`, `medium`, `high`, `xhigh` or `max`. |
 | `/live effort session` | Uses the effort level of the session again. |
-| `/live summary` | Writes a timesheet entry for the session. |
-| `/live summary report` | Writes a short report for the session. |
-| `/live summaries off` | Stops the summary offer at the end of each task. Use `on` to start it again. |
+| `/live summary` | Writes a summary of the session. |
+| `/live summary changes` | Writes a list of the changes in the session. |
+| `/live summary next` | Writes a list of the work that is left and the decisions for you. |
+| `/live summaries off` | Stops the recap offer at the end of each task. Use `on` to start it again. |
 | `/live watch <file>` | Shows the progress of a script from a progress file. |
 | `/live unwatch` | Stops the progress file display. |
 | `/live questions panel` | Shows the questions from Claude in the panel. This is the default. |

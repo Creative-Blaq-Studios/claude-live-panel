@@ -247,20 +247,22 @@ export function running(calls: Call[]): Call[] {
   return calls.filter(c => c.endedAt === undefined)
 }
 
-/** What Claude is asked to write for each kind of copyable summary. */
+/** What Claude is asked to write for each kind of copyable recap. Plain words for someone who wasn't watching. */
 export const SUMMARY_PROMPTS: Record<SummaryKind, string> = {
-  timesheet:
-    'Write a timesheet entry for the work done in this session so far. 5 to 7 lines, each starting with "- ", ' +
-    'past tense, plain words, no preamble and no closing line, no markdown other than the dashes. If the work ' +
-    'continued an earlier session, the first line says where it continued from; the last line says where it stands now ' +
-    '(finished, paused, or what is left).',
-  report:
-    'Write a short report of this session to paste into a document. Start with one sentence saying what was done ' +
-    'and where it stands. Then short bullet lists under the headings "Done", "Issues found" and "Next steps" ' +
-    '(leave out a heading with nothing under it). Under 250 words, plain Markdown, no preamble.',
+  summary:
+    'Summarize this session for someone who was not watching. Start with one sentence on what was done and where ' +
+    'it stands now. Then up to 5 short bullets with the main outcomes. Plain words, no jargon, no preamble, under 120 words.',
+  changes:
+    'List what changed in this session: each file or thing that was created, changed or deleted, one short bullet each, ' +
+    'with a few plain words on why. Group the bullets under short headings if there are more than 8. No preamble. ' +
+    'If nothing changed, say so in one line.',
+  next:
+    'List what is left to do and any decisions that need the user, as short bullets, most important first. ' +
+    'End with one line that starts "Recommended next step:". Plain words, no preamble, under 120 words.',
 }
 
-export const SUMMARY_LABEL: Record<SummaryKind, string> = { timesheet: 'Timesheet entry', report: 'Short report' }
+export const SUMMARY_LABEL: Record<SummaryKind, string> = { summary: 'Summary', changes: 'What changed', next: "What's next" }
+export const SUMMARY_KINDS: SummaryKind[] = ['summary', 'changes', 'next']
 
 /** What an action was given, readable: the full command for a shell call, else its arguments. */
 export function inputDetail(tool: string, input: Record<string, unknown>): string {
@@ -331,3 +333,22 @@ export function activityShares(calls: Call[]): Share[] {
 }
 
 export const EFFORT_LABEL: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' }
+
+/** A file Claude touched this session, for "Where Claude worked". */
+export type Place = { path: string; name: string; creates: number; edits: number; reads: number; last: number }
+
+/** The files Claude created, edited or read: changed ones first, newest first. */
+export function places(calls: Call[]): Place[] {
+  const byPath = new Map<string, Place>()
+  for (const c of calls) {
+    if (!c.target) continue
+    const place = byPath.get(c.target) ?? { path: c.target, name: base(c.target), creates: 0, edits: 0, reads: 0, last: 0 }
+    if (c.label === 'Creating a file') place.creates++
+    else if (c.kind === 'edit') place.edits++
+    else place.reads++
+    place.last = Math.max(place.last, c.startedAt)
+    byPath.set(c.target, place)
+  }
+  const changed = (p: Place) => (p.creates + p.edits > 0 ? 1 : 0)
+  return [...byPath.values()].sort((a, b) => changed(b) - changed(a) || b.last - a.last)
+}

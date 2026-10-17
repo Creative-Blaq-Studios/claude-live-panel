@@ -26,6 +26,8 @@ export type Call = {
   startedAt: number
   endedAt?: number
   isError?: boolean
+  /** The full path of the file it read, created or edited, for "Where Claude worked". */
+  target?: string
   /** What the action was given (a command, a file path, its arguments), for the detail view. */
   input?: string
   /** The start of what it returned or why it failed, for the detail view. */
@@ -64,10 +66,10 @@ export type Ask = {
 export type QuestionMode = 'panel' | 'dialog'
 
 /**
- * The copyable summary offered when Claude finishes or pauses: a timesheet
- * entry or a short report, written from the session's own history.
+ * The copyable recap offered when Claude finishes or pauses, written from the
+ * session's own history: a summary, what changed, or what's next.
  */
-export type SummaryKind = 'timesheet' | 'report'
+export type SummaryKind = 'summary' | 'changes' | 'next'
 export type Summary = { kind: SummaryKind; status: 'offer' | 'loading' | 'ready' | 'error'; text: string; at: number }
 
 declare module 'claude-code' {
@@ -86,6 +88,7 @@ declare module 'claude-code' {
       effortChoice: EffortLevel | ''
       openCall: string
       showDetails: boolean
+      openFile: string
     }
   }
 }
