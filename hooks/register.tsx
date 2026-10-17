@@ -31,6 +31,7 @@ import {
 import { activitySvg, railSvg } from './svg'
 
 const PANE = 'live-view'
+const RECAP_PANE = 'live-view-recap'
 const TITLE = 'Live'
 const LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const TONE: Record<Tone, string> = { now: PAL.now, failed: PAL.failed, done: PAL.done, slow: '#C9A24A', muted: PAL.waiting }
@@ -51,6 +52,8 @@ const showDetails = atom({ plugin: 'live-view', key: 'showDetails' } as const, f
 const openFile = atom({ plugin: 'live-view', key: 'openFile' } as const, '')
 
 const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: TITLE }).catch(() => ({ isPlaced: false }))
+/** The recap in a tab of its own, full height, so a long one reads top to bottom. */
+const openRecap = ($: EngineInterface) => $.ui.open({ id: RECAP_PANE, title: 'Recap', focus: true }).catch(() => ({ isPlaced: false }))
 const clock = (ms: number) => new Date(ms).toTimeString().slice(0, 8)
 
 /** Sends text to Claude as the person's own words, and clears the card it answered. */
@@ -285,9 +288,31 @@ export const register: Register = on => {
     }
   }).catch(($, e, next) => next(e))
 
+  on('ui.render', { component: 'Pane', requestId: RECAP_PANE }, async ($, e) => {
+    const { Box, Text, Button, Markdown } = $.ui.resolve(e)
+    const sum = await read($, summary)
+    if (!sum || sum.status !== 'ready') {
+      return (
+        <Box flexDirection="column">
+          <Text dimColor>{sum?.status === 'loading' ? 'Writing the recap…' : 'No recap yet. Open the Live panel and pick Summary, What changed or What\'s next.'}</Text>
+        </Box>
+      )
+    }
+    return (
+      <Box flexDirection="column" gap={1}>
+        <Text bold>{SUMMARY_LABEL[sum.kind]}</Text>
+        <Markdown key="recap-text" text={sum.text} />
+        <Box flexDirection="row" gap={1} flexWrap="wrap">
+          <Button key="recap-copy" variant="primary" onPress={press => copySummary($, press.surface)}>Copy</Button>
+          <Button key="recap-close" role="dismiss" onPress={() => $.ui.close({ id: RECAP_PANE })}>Close</Button>
+        </Box>
+      </Box>
+    )
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
-    const { Box, Text, Button, Code } = els
+    const { Box, Text, Button, Code, Markdown } = els
     // The terminal draws no pictures and mobile no text fields or menus: fall back to text there.
     const Svg = e.surface !== 'terminal' && 'Svg' in els ? els.Svg : undefined
     const Input = e.surface !== 'mobile' && 'Input' in els ? els.Input : undefined
@@ -428,9 +453,10 @@ export const register: Register = on => {
         {sum.status === 'ready' || sum.status === 'error' ? (
           <Box flexDirection="column">
             <Text bold>{SUMMARY_LABEL[sum.kind]}</Text>
-            {sum.status === 'ready' ? <Code source={sum.text} language="markdown" /> : <Text color={PAL.failed}>{sum.text}</Text>}
+            {sum.status === 'ready' ? <Markdown key="sum-text" text={sum.text} /> : <Text color={PAL.failed}>{sum.text}</Text>}
             <Box flexDirection="row" gap={1} flexWrap="wrap">
               {sum.status === 'ready' ? <Button key="sum-copy" variant="primary" onPress={press => copySummary($, press.surface)}>Copy</Button> : null}
+              {sum.status === 'ready' ? <Button key="sum-full" onPress={() => openRecap($)}>Open full view</Button> : null}
               <Button key="sum-again" onPress={() => writeSummary($, sum.kind)}>{sum.status === 'error' ? 'Try again' : 'Rewrite'}</Button>
               {otherKinds.map(k => (
                 <Button key={`sum-${k}`} onPress={() => writeSummary($, k)}>{SUMMARY_LABEL[k]}</Button>
