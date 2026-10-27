@@ -4,9 +4,11 @@ The Live panel is a side panel for Claude Code. It shows what Claude does while 
 
 The panel gives you an overview first. Hold the pointer on an item or click it to see more details.
 
-The panel works in the Claude Code desktop app and in the terminal.
+The panel works in the Claude Code desktop app, in the Claude Code extension for VS Code and in the terminal. In VS Code, the panel shows one filled button for the main action. The other buttons are quiet, so the main action is easy to find.
 
-The Claude Code extension for VS Code cannot show the panel at this time. In VS Code, the `/live summary` and `/live pause` commands write the text in the chat.
+If a surface cannot show the panel, the `/live summary` and `/live pause` commands write the text in the chat.
+
+Refer to [CHANGELOG.md](CHANGELOG.md) for the changes in each version.
 
 ## What the panel shows
 
@@ -14,8 +16,10 @@ The Claude Code extension for VS Code cannot show the panel at this time. In VS 
 | --- | --- |
 | Health signal | One word that tells you the status: Needs you, Failed, Finished, Slow, On track, Working or Ready. |
 | Model and effort | The model that does the work and its effort level. Use the Effort menu to change the level. |
-| Questions | The questions that Claude asks you. Push an answer button or type an answer. |
-| Progress | A bar with one segment for each step of the task. It also shows the current step, the next step and the time left. |
+| Questions | The questions that Claude asks you. When there are several, each question has a tab. Push an answer button or type an answer, then push Send answers. |
+| Progress | A ring that shows how much of the task is done. It also shows the time spent, the time left, the current step and the next step. |
+| Claude's updates | What Claude does now, in plain words. A short update in Claude's words comes when the step changes, or about one time each minute. |
+| Steps | Each step of the task with the time it took. |
 | Where Claude worked | The files that Claude created, edited or read. Click a file to see the actions on that file. |
 | Activity | A bar that shows how Claude used the last 10 minutes. It also shows the latest actions. |
 | Action details | Click an action to see the full command or file. You also see the result or the error. |
@@ -88,6 +92,7 @@ The panel opens when a session starts. If you close it, type `/live` to open it 
 | `/live summary next` | Writes a list of the work that is left and the decisions for you. |
 | `/live summary all` | Writes a summary of all of the session. You can add `all` to the other recap commands too. |
 | `/live summaries off` | Stops the recap offer at the end of each task. Use `on` to start it again. |
+| `/live narrate off` | Stops the short updates from Claude in plain words. Use `on` to start them again. |
 | `/live watch <file>` | Shows the progress of a script from a progress file. |
 | `/live unwatch` | Stops the progress file display. |
 | `/live questions panel` | Shows the questions from Claude in the panel. This is the default. |

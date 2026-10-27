@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Ask, Call, Checkpoint, EffortLevel, Engine, Feed, Plan, QuestionMode, RecapScope, Snapshot, Step, Summary, SummaryKind, Turn } from '../types'
+import type { Ask, Call, Checkpoint, EffortLevel, Engine, Feed, Narration, Plan, QuestionMode, RecapScope, Snapshot, Step, Summary, SummaryKind, Turn } from '../types'
 import type { Tone } from './model'
 import {
   activityShares,
@@ -17,6 +17,9 @@ import {
   health,
   inputDetail,
   isPlanTool,
+  NARRATE_SYSTEM,
+  narrationPrompt,
+  nowDoing,
   PAL,
   parseFeed,
   parseQuestions,
@@ -31,7 +34,7 @@ import {
   steClean,
   timeLeft,
 } from './model'
-import { activitySvg, railSvg } from './svg'
+import { activitySvg, railSvg, ringSvg } from './svg'
 
 const PANE = 'live-view'
 const RECAP_PANE = 'live-view-recap'
@@ -57,6 +60,8 @@ const checkpoints = atom({ plugin: 'live-view', key: 'checkpoints' } as const, [
 const openCheckpoint = atom({ plugin: 'live-view', key: 'openCheckpoint' } as const, '')
 const recapScope = atom({ plugin: 'live-view', key: 'recapScope' } as const, 'since' as RecapScope)
 const resume = atom({ plugin: 'live-view', key: 'resume' } as const, null as Checkpoint | null)
+const narration = atom({ plugin: 'live-view', key: 'narration' } as const, [] as Narration[])
+const narrateOn = atom({ plugin: 'live-view', key: 'narrateOn' } as const, true)
 
 const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: TITLE }).catch(() => ({ isPlaced: false }))
 /** The recap in a tab of its own, full height, so a long one reads top to bottom. */
@@ -93,6 +98,15 @@ async function writeSummary($: EngineInterface, kind: SummaryKind, scopeArg?: Re
       ? { ...cur, status: text ? 'ready' : 'error', text: text || `Couldn't write it this time${why}. Try again in a moment.` }
       : cur,
   )
+}
+
+/** Asks the small fast model for one status line in Claude's voice, from the plan and the latest actions only. */
+async function narrate($: EngineInterface): Promise<void> {
+  const previous = (await read($, narration)).at(-1)?.text ?? ''
+  const prompt = narrationPrompt(await read($, plan), await read($, calls), previous)
+  const reply = await $.model.complete({ model: 'haiku', system: NARRATE_SYSTEM, prompt, maxTokens: 120 }).catch(() => undefined)
+  const text = reply?.isAnswered ? steClean(reply.text).trim() : ''
+  if (text) await update($, narration, list => [...list, { text, at: Date.now() }].slice(-6))
 }
 
 /** Where this project's checkpoints are kept between sessions. */
@@ -177,7 +191,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'live',
       description: 'Open the Live panel: progress, what Claude is doing, effort level, and questions for you',
-      argumentHint: '[pause | checkpoint | effort low|medium|high|xhigh|max|session | summary [changes|next] [all] | summaries on|off | watch <file> | unwatch | questions panel|dialog]',
+      argumentHint: '[pause | checkpoint | effort low|medium|high|xhigh|max|session | summary [changes|next] [all] | summaries on|off | narrate on|off | watch <file> | unwatch | questions panel|dialog]',
     })
     const savedMode = await $.store.get('mode').catch(() => undefined)
     if (savedMode === 'panel' || savedMode === 'dialog') await update($, mode, () => savedMode)
@@ -191,11 +205,15 @@ export const register: Register = on => {
     if (Array.isArray(stored) && stored.length > 0 && (await read($, checkpoints)).length === 0) {
       await update($, resume, () => stored[stored.length - 1] as Checkpoint)
     }
+    if ((await $.store.get('narrate').catch(() => undefined)) === false) await update($, narrateOn, () => false)
     const autoOpen = await $.store.get('autoOpen').catch(() => undefined)
     if (autoOpen !== false) void openPane($)
 
-    // The live loop: follow a progress file, and keep timers ticking while work runs.
+    // The live loop: follow a progress file, keep timers ticking while work runs, and narrate now and then.
     let lastText = ''
+    let narratedAt = 0
+    let narratedStep = ''
+    let isNarrating = false
     $.clock.every(1000, async () => {
       const f = await read($, feed)
       if (f.path !== '') {
@@ -209,6 +227,21 @@ export const register: Register = on => {
       const t = await read($, turn)
       const active = f.steps.some(s => s.status === 'active')
       if (t.isRunning || active) await update($, tick, () => Date.now())
+
+      // A new line when the step changes, else at most once a minute, and only after new actions.
+      if (!t.isRunning || isNarrating || !(await read($, narrateOn))) return
+      const now = Date.now()
+      const p = await read($, plan)
+      const step = `${p.steps.findIndex(s => s.status === 'active')}:${p.steps.filter(s => s.status === 'done').length}`
+      const fresh = (await read($, calls)).filter(c => !c.isHelper && c.startedAt > Math.max(narratedAt, t.startedAt)).length
+      const isDue = (step !== narratedStep && now - narratedAt > 15_000 && fresh >= 1) || (now - narratedAt > 60_000 && fresh >= 3)
+      if (!isDue) return
+      isNarrating = true
+      narratedAt = now
+      narratedStep = step
+      void narrate($).finally(() => {
+        isNarrating = false
+      })
     })
 
     return next(e)
@@ -263,6 +296,11 @@ export const register: Register = on => {
         return { text: `${lead} at ${clock(cp.at).slice(0, 5)}.${steps}${files}\n\n${cp.summary}` }
       }
       return { text: `${lead}. It is in the Live panel.` }
+    }
+    if (verb === 'narrate' && (arg === 'on' || arg === 'off')) {
+      await update($, narrateOn, () => arg === 'on')
+      await $.store.set('narrate', arg === 'on').catch(() => undefined)
+      return { text: `The Live panel will ${arg === 'on' ? '' : 'no longer '}show short updates from Claude in plain words while it works.` }
     }
     if (verb === 'autoopen' && (arg === 'on' || arg === 'off')) {
       await $.store.set('autoOpen', arg === 'on').catch(() => undefined)
@@ -423,6 +461,7 @@ export const register: Register = on => {
     const cpOpen = await read($, openCheckpoint)
     const scopeNow = await read($, recapScope)
     const back = await read($, resume)
+    const lines = await read($, narration)
     const lastCp = lastReady(cps)
     await read($, tick)
     const now = Date.now()
@@ -436,18 +475,18 @@ export const register: Register = on => {
     // 1. Health, time, model and effort: always on top.
     const model = eng.model || t.model
     const effortNow = eng.effort ? (EFFORT_LABEL[eng.effort] ?? eng.effort) : ''
-    const timeText = t.isRunning ? `Working · ${duration(now - t.startedAt)}` : t.endedAt ? `Last reply took ${duration(t.endedAt - t.startedAt)}` : 'Idle'
+    const timeText = t.isRunning ? duration(now - t.startedAt) : t.endedAt ? `took ${duration(t.endedAt - t.startedAt)}` : ''
+    // VS Code fills every Button that is not dim: there, a dim Button is the quiet, outlined one.
+    const isVscode = e.surface === 'vscode'
     const header = (
       <Box key="hdr" flexDirection="column">
         <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
-          <Box borderStyle="round" borderColor={tone} paddingX={1}>
-            <Text bold color={tone}>● {signal.label}</Text>
-          </Box>
-          <Text dimColor>{timeText}</Text>
+          <Text size="heading" weight="semibold" color={tone}>● {signal.label}</Text>
+          <Text dimColor tabular>{timeText}</Text>
         </Box>
         {signal.note ? <Text dimColor wrap="wrap">{signal.note}</Text> : null}
         <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
-          {model ? <Text dimColor>{model}</Text> : null}
+          {model ? <Text dimColor size="footnote">{model}</Text> : null}
           {Select ? (
             <Select
               key="effort"
@@ -467,21 +506,47 @@ export const register: Register = on => {
       </Box>
     )
 
-    // 2. A question for the person: first, whenever there is one.
-    const card = a ? (
-      <Box key="ask" flexDirection="column" borderStyle="round" borderColor={PAL.now} paddingX={1} marginTop={1}>
-        <Text bold color={PAL.now}>Claude needs you</Text>
-        {a.questions.map((q, qi) => (
-          <Box key={`q${qi}`} flexDirection="column" marginTop={qi === 0 ? 0 : 1}>
-            {q.header ? <Text dimColor>{q.header}</Text> : null}
-            <Text bold>{q.question}</Text>
-            {q.multiSelect ? <Text dimColor>Pick one or more, then Send answers.</Text> : null}
-            {q.options.map((o, oi) => {
-              const picked = (a.picks[qi] ?? []).includes(o.label)
+    // 2. A question for the person: first, whenever there is one. Several questions show as tabs, one at a time.
+    const isTabbed = !!a && a.source === 'question' && a.questions.length > 1
+    const tab = a ? Math.min(a.tab ?? 0, Math.max(0, a.questions.length - 1)) : 0
+    const q = a?.questions[tab]
+    const answered = a ? a.questions.filter((_, i) => (a.picks[i] ?? []).length > 0).length : 0
+    const card = a && q ? (
+      <Box key="ask" flexDirection="column" borderStyle="round" borderColor={PAL.now} paddingX={1} paddingY={1} marginTop={1} gap={1}>
+        <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+          <Text bold color={PAL.now}>Claude needs you{isTabbed ? ` · ${a.questions.length} questions` : ''}</Text>
+          <Button key={`${a.id}-skip`} plain dimColor onPress={() => update($, ask, () => null)}>Dismiss</Button>
+        </Box>
+        {isTabbed ? (
+          <Box flexDirection="row" flexWrap="wrap" gap={1}>
+            {a.questions.map((qq, qi) => {
+              const done = (a.picks[qi] ?? []).length > 0
               return (
+                <Button key={`${a.id}-tab-${qi}`} plain dimColor={qi !== tab} onPress={() => update($, ask, cur => (cur ? { ...cur, tab: qi } : cur))}>
+                  <Text color={done ? PAL.done : undefined}>{done ? '✓' : qi + 1} </Text>
+                  <Text bold={qi === tab} underline={qi === tab} color={qi === tab ? PAL.now : undefined}>{qq.header || `Question ${qi + 1}`}</Text>
+                </Button>
+              )
+            })}
+          </Box>
+        ) : q.header ? (
+          <Text dimColor>{q.header}</Text>
+        ) : null}
+        <Box key={`${a.id}-q${tab}`} flexDirection="column" gap={1}>
+          <Text bold wrap="wrap">{q.question}</Text>
+          {q.multiSelect ? <Text dimColor>Pick one or more.</Text> : null}
+          {/* Short answers with nothing to explain (Yes, No) sit side by side; the rest stack with their descriptions. */}
+          <Box flexDirection={q.options.every(o => !o.description && o.label.length <= 24) ? 'row' : 'column'} flexWrap="wrap" gap={1}>
+          {q.options.map((o, oi) => {
+            const picked = (a.picks[tab] ?? []).includes(o.label)
+            const isRecommended = /\(recommended\)\s*$/i.test(o.label)
+            return (
+              <Box key={`${a.id}-${tab}-${oi}`} flexDirection="column">
                 <Button
-                  key={`${a.id}-${qi}-${oi}`}
+                  key={`${a.id}-${tab}-${oi}-pick`}
                   variant={picked ? 'primary' : 'secondary'}
+                  dimColor={isVscode && !picked}
+                  hotkey={oi < 9 ? String(oi + 1) : undefined}
                   onPress={async () => {
                     const cur = await read($, ask)
                     if (!cur) return
@@ -490,31 +555,48 @@ export const register: Register = on => {
                       return
                     }
                     const picks = cur.picks.map((row, i) =>
-                      i !== qi ? row : q.multiSelect ? (row.includes(o.label) ? row.filter(l => l !== o.label) : [...row, o.label]) : [o.label],
+                      i !== tab ? row : q.multiSelect ? (row.includes(o.label) ? row.filter(l => l !== o.label) : [...row, o.label]) : [o.label],
                     )
                     const fresh = { ...cur, picks }
-                    const isSingleAndComplete = cur.questions.every(qq => !qq.multiSelect) && picks.every(row => row.length > 0)
-                    if (isSingleAndComplete) await send($, answerText(fresh))
-                    else await update($, ask, () => fresh)
+                    if (cur.questions.length === 1 && !q.multiSelect) {
+                      await send($, answerText(fresh))
+                      return
+                    }
+                    // A single pick moves on to the next question still open.
+                    const open = picks.findIndex(row => row.length === 0)
+                    await update($, ask, () => ({ ...fresh, tab: !q.multiSelect && open >= 0 ? open : tab }))
                   }}
                 >
-                  {picked ? '✓ ' : ''}{o.label}
-                  {o.description ? <Text dimColor> · {o.description}</Text> : null}
+                  {q.multiSelect ? (picked ? '☑ ' : '☐ ') : picked ? '● ' : '○ '}
+                  {o.label.replace(/\s*\(recommended\)\s*$/i, '')}
+                  {isRecommended ? <Text color={PAL.now}> · Recommended</Text> : null}
                 </Button>
-              )
-            })}
+                {o.description ? <Box paddingLeft={2}><Text dimColor wrap="wrap">{o.description}</Text></Box> : null}
+              </Box>
+            )
+          })}
           </Box>
-        ))}
-        {a.source === 'question' && (a.questions.length > 1 || a.questions.some(q => q.multiSelect)) ? (
-          <Button key={`${a.id}-send`} variant="primary" onPress={async () => {
-            const cur = await read($, ask)
-            if (cur) await send($, answerText(cur))
-          }}>Send answers</Button>
+        </Box>
+        {a.source === 'question' && (isTabbed || q.multiSelect) ? (
+          <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+            <Text dimColor>{isTabbed ? `${answered} of ${a.questions.length} answered` : ''}</Text>
+            <Button key={`${a.id}-send`} variant="primary" onPress={async () => {
+              const cur = await read($, ask)
+              if (!cur) return
+              const open = cur.questions.findIndex((_, i) => (cur.picks[i] ?? []).length === 0)
+              if (open >= 0 && cur.questions.length > 1) {
+                await update($, ask, () => ({ ...cur, tab: open }))
+                $.ui.toast(`Answer "${cur.questions[open]?.header || `question ${open + 1}`}" first, or type your own reply.`)
+                return
+              }
+              await send($, answerText(cur))
+            }}>Send answers</Button>
+          </Box>
         ) : null}
         {Input ? (
           <Input
             key={`${a.id}-own`}
-            placeholder={a.questions[0]?.options.length ? 'Or type your own answer' : 'Type your reply'}
+            placeholder={q.options.length ? 'Or reply in your own words' : 'Type your reply'}
             submitLabel="Send"
             onSubmit={async (value: string) => {
               const cur = await read($, ask)
@@ -522,7 +604,13 @@ export const register: Register = on => {
             }}
           />
         ) : null}
-        <Button key={`${a.id}-skip`} dimColor onPress={() => update($, ask, () => null)}>Dismiss</Button>
+        {a.source === 'question' ? (
+          <Button key="mode" plain dimColor onPress={async () => {
+            const nextMode = (await read($, mode)) === 'panel' ? 'dialog' : 'panel'
+            await update($, mode, () => nextMode)
+            await $.store.set('mode', nextMode).catch(() => undefined)
+          }}>{m === 'panel' ? 'Ask me in the usual dialog instead' : 'Ask me here in the panel'}</Button>
+        ) : null}
       </Box>
     ) : null
 
@@ -544,8 +632,8 @@ export const register: Register = on => {
             ) : null}
             <Box flexDirection="row" gap={1} flexWrap="wrap">
               <Button key="sum-summary" variant="primary" onPress={() => writeSummary($, 'summary')}>Summary</Button>
-              <Button key="sum-changes" onPress={() => writeSummary($, 'changes')}>What changed</Button>
-              <Button key="sum-next" onPress={() => writeSummary($, 'next')}>What's next</Button>
+              <Button key="sum-changes" dimColor={isVscode} onPress={() => writeSummary($, 'changes')}>What changed</Button>
+              <Button key="sum-next" dimColor={isVscode} onPress={() => writeSummary($, 'next')}>What's next</Button>
               <Button key="sum-no" dimColor onPress={() => update($, summary, () => null)}>Not now</Button>
             </Box>
           </Box>
@@ -558,11 +646,11 @@ export const register: Register = on => {
             {sum.status === 'ready' ? <Markdown key="sum-text" text={sum.text} /> : <Text color={PAL.failed}>{sum.text}</Text>}
             <Box flexDirection="row" gap={1} flexWrap="wrap">
               {sum.status === 'ready' ? <Button key="sum-copy" variant="primary" onPress={press => copySummary($, press.surface)}>Copy</Button> : null}
-              {sum.status === 'ready' ? <Button key="sum-full" onPress={() => openRecap($)}>Open full view</Button> : null}
-              <Button key="sum-again" onPress={() => writeSummary($, sum.kind, sum.scope)}>{sum.status === 'error' ? 'Try again' : 'Rewrite'}</Button>
-              {lastCp && sum.scope === 'since' ? <Button key="sum-whole" onPress={() => writeSummary($, sum.kind, 'all')}>Whole session</Button> : null}
+              {sum.status === 'ready' ? <Button key="sum-full" dimColor={isVscode} onPress={() => openRecap($)}>Open full view</Button> : null}
+              <Button key="sum-again" dimColor={isVscode} onPress={() => writeSummary($, sum.kind, sum.scope)}>{sum.status === 'error' ? 'Try again' : 'Rewrite'}</Button>
+              {lastCp && sum.scope === 'since' ? <Button key="sum-whole" dimColor={isVscode} onPress={() => writeSummary($, sum.kind, 'all')}>Whole session</Button> : null}
               {otherKinds.map(k => (
-                <Button key={`sum-${k}`} onPress={() => writeSummary($, k, sum.scope)}>{SUMMARY_LABEL[k]}</Button>
+                <Button key={`sum-${k}`} dimColor={isVscode} onPress={() => writeSummary($, k, sum.scope)}>{SUMMARY_LABEL[k]}</Button>
               ))}
               <Button key="sum-close" dimColor onPress={() => update($, summary, () => null)}>Close</Button>
             </Box>
@@ -616,6 +704,88 @@ export const register: Register = on => {
           ) : null}
           {!compact && nextStep ? <Text dimColor wrap="truncate-end">Next: {nextStep.title}</Text> : null}
           {!compact && left !== undefined ? <Text dimColor>About {duration(left)} left</Text> : null}
+        </Box>
+      )
+    }
+
+    // At a glance: a ring of the steps done, the share in big type, time so far and left, then what runs now.
+    const ring = (steps: Step[], title: string) => {
+      if (steps.length === 0) return null
+      const done = steps.filter(s => s.status === 'done').length
+      const activeAt = steps.findIndex(s => s.status === 'active')
+      const active = steps[activeAt]
+      const nextStep = steps.find((s, i) => i > activeAt && s.status === 'pending')
+      const left = state === 'working' ? timeLeft(steps, now) : undefined
+      const began = Math.min(...steps.map(s => s.startedAt ?? Infinity), t.startedAt || Infinity)
+      const spent = Number.isFinite(began) ? (t.isRunning ? now : t.endedAt || now) - began : 0
+      const changed = places(list).filter(pl => pl.creates + pl.edits > 0).length
+      const size = Math.min(96, Math.round(px * 0.3))
+      const drawn = Svg ? ringSvg(steps, size) : undefined
+      return (
+        <Box key="ring" flexDirection="column" marginTop={1} gap={1}>
+          <Text dimColor wrap="truncate-end">{title}</Text>
+          <Box flexDirection="row" alignItems="center" gap={2}>
+            {Svg && drawn ? <Svg key="ring-drawing" source={drawn.source} alt={drawn.alt} width={size} height={size} /> : null}
+            <Box flexDirection="column">
+              <Text size="title" weight="semibold" tabular>{Math.round((done / steps.length) * 100)}%</Text>
+              {Svg ? null : <Text color={PAL.done}>{railText(steps)}</Text>}
+              <Text dimColor>{done} of {steps.length} steps{left !== undefined ? ` · about ${duration(left)} left` : ''}</Text>
+              <Text dimColor tabular>{duration(spent)} so far{changed ? ` · ${changed} file${changed === 1 ? '' : 's'} changed` : ''}</Text>
+            </Box>
+          </Box>
+          {active ? (
+            <Text weight="semibold" wrap="wrap">
+              <Text color={PAL.now}>Now: </Text>
+              {active.title}
+              {active.startedAt !== undefined ? <Text color={PAL.now} tabular> · {duration(now - active.startedAt)}</Text> : null}
+            </Text>
+          ) : null}
+          {nextStep ? <Text dimColor wrap="truncate-end">Then: {nextStep.title}</Text> : null}
+        </Box>
+      )
+    }
+
+    // Claude in its own words: the latest line, with what it does this second above it, and the two before.
+    const thisTurn = lines.filter(n => n.at >= t.startedAt)
+    const latest = thisTurn.at(-1)
+    const narrationBlock = (
+      <Box key="narration" flexDirection="column" marginTop={1}>
+        <Box flexDirection="column" borderStyle="round" borderColor={PAL.waiting} paddingX={1}>
+          <Text color={PAL.now}>● {nowDoing(list)}</Text>
+          {latest ? <Text wrap="wrap">{latest.text}</Text> : null}
+        </Box>
+        {thisTurn.slice(-3, -1).reverse().map(n => (
+          <Text key={`said-${n.at}`} dimColor wrap="wrap">{clock(n.at).slice(0, 5)}  {n.text}</Text>
+        ))}
+      </Box>
+    )
+
+    // Where the time went, step by step: done steps with how long they took, the one now with its running time.
+    const stepsList = (steps: Step[]) => {
+      if (steps.length === 0) return null
+      const activeAt = steps.findIndex(s => s.status === 'active')
+      const from = Math.max(0, Math.min((activeAt < 0 ? steps.length : activeAt) - 4, steps.length - 10))
+      return (
+        <Box key="steps" flexDirection="column" marginTop={1}>
+          <Text bold>Steps</Text>
+          {from > 0 ? <Text dimColor>{from} earlier steps done</Text> : null}
+          {steps.slice(from, from + 10).map((s, i) => {
+            const took =
+              s.status === 'done' && s.startedAt !== undefined && s.doneAt !== undefined ? duration(s.doneAt - s.startedAt)
+                : s.status === 'active' && s.startedAt !== undefined ? duration(now - s.startedAt)
+                  : ''
+            const color = s.status === 'done' ? PAL.done : s.status === 'active' ? PAL.now : s.status === 'failed' ? PAL.failed : undefined
+            return (
+              <Box key={`step-${from + i}`} flexDirection="row" justifyContent="space-between" gap={1}>
+                <Text wrap="truncate-end" dimColor={s.status === 'pending'} bold={s.status === 'active'}>
+                  <Text color={color}>{s.status === 'done' ? '✓' : s.status === 'active' ? '●' : s.status === 'failed' ? '✕' : '○'} </Text>
+                  {s.title}
+                </Text>
+                <Text dimColor tabular>{took}</Text>
+              </Box>
+            )
+          })}
+          {steps.length > from + 10 ? <Text dimColor>and {steps.length - from - 10} more</Text> : null}
         </Box>
       )
     }
@@ -686,7 +856,6 @@ export const register: Register = on => {
             {expanded ? 'Show fewer actions' : `Show all recent actions (${Math.min(list.length, 20)})`}
           </Button>
         ) : null}
-        <Text dimColor>Click an action to see exactly what ran and what came back.</Text>
       </Box>
     )
 
@@ -703,14 +872,14 @@ export const register: Register = on => {
         </Box>
         <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
           {where.slice(0, 10).map(pl => (
-            <Button key={`place-${pl.path}`} plain onPress={() => update($, openFile, cur => (cur === pl.path ? '' : pl.path))}>
+            <Button key={`place-${pl.path}`} plain dimColor onPress={() => update($, openFile, cur => (cur === pl.path ? '' : pl.path))}>
               <Text color={placeColor(pl)}>{pl.creates ? '+' : pl.edits ? '✎' : '○'}</Text> {pl.name}
               {pl.creates + pl.edits > 1 ? <Text dimColor> ×{pl.creates + pl.edits}</Text> : null}
             </Button>
           ))}
         </Box>
         {where.length > 10 ? <Text dimColor>and {where.length - 10} more</Text> : null}
-        <Text dimColor>+ created  ✎ edited  ○ read. Click a file to see what Claude did with it.</Text>
+        <Text dimColor size="footnote">+ created  ✎ edited  ○ read</Text>
         {opened ? (
           <Box key="file-detail" flexDirection="column" borderStyle="round" borderColor={placeColor(opened)} paddingX={1}>
             <Text bold>{opened.name}</Text>
@@ -736,7 +905,7 @@ export const register: Register = on => {
         {cp.status === 'ready' ? (
           <Box flexDirection="row" gap={1} flexWrap="wrap">
             <Button key={`cp-continue-${cp.id}`} variant="primary" onPress={() => continueFrom($, cp)}>Continue from here</Button>
-            <Button key={`cp-copy-${cp.id}`} onPress={press => copyText($, cp.summary, press.surface)}>Copy</Button>
+            <Button key={`cp-copy-${cp.id}`} dimColor={isVscode} onPress={press => copyText($, cp.summary, press.surface)}>Copy</Button>
           </Box>
         ) : null}
       </Box>
@@ -748,14 +917,14 @@ export const register: Register = on => {
           <Text dimColor>{cps.length ? `${cps.length} saved` : 'none yet'}</Text>
         </Box>
         <Box flexDirection="row" gap={1} flexWrap="wrap">
-          <Button key="cp-save" variant={t.isRunning ? 'primary' : 'secondary'} onPress={() => saveCheckpoint($, t.isRunning)}>
+          <Button key="cp-save" variant={t.isRunning ? 'primary' : 'secondary'} dimColor={isVscode && !t.isRunning} onPress={() => saveCheckpoint($, t.isRunning)}>
             {t.isRunning ? 'Pause and save checkpoint' : 'Save checkpoint'}
           </Button>
         </Box>
         {cps.length === 0 ? <Text dimColor>Save a checkpoint to recap this part of the work and continue from it later.</Text> : null}
         {[...cps].reverse().slice(0, 4).map(cp => (
           <Box key={`cp-row-${cp.id}`} flexDirection="column">
-            <Button key={`cp-${cp.id}`} plain onPress={() => update($, openCheckpoint, cur => (cur === cp.id ? '' : cp.id))}>
+            <Button key={`cp-${cp.id}`} plain dimColor={isVscode} onPress={() => update($, openCheckpoint, cur => (cur === cp.id ? '' : cp.id))}>
               <Text color={cp.status === 'ready' ? PAL.done : cp.status === 'writing' ? PAL.now : PAL.failed}>◆ </Text>
               #{cps.indexOf(cp) + 1} · {clock(cp.at).slice(0, 5)}
               <Text dimColor> · {cp.snapshot.steps.filter(st => st.status === 'done').length}/{cp.snapshot.steps.length} steps · {cp.snapshot.filesChanged.length} files changed {cpOpen === cp.id ? '▾' : '▸'}</Text>
@@ -796,19 +965,14 @@ export const register: Register = on => {
           />
         ) : null}
         {last ? <Text dimColor wrap="truncate-end">You sent: {last}</Text> : null}
-        <Box flexDirection="row" gap={1} flexWrap="wrap">
-          {t.isRunning ? (
-            <Button key="stop" onPress={async () => {
+        {t.isRunning ? (
+          <Box flexDirection="row" gap={1} flexWrap="wrap">
+            <Button key="stop" dimColor onPress={async () => {
               const cur = await read($, turn)
               if (cur.isRunning && cur.turnId) await $.turn.abort({ turnId: cur.turnId }).catch(() => undefined)
             }}>Stop Claude</Button>
-          ) : null}
-          <Button key="mode" plain dimColor onPress={async () => {
-            const nextMode = (await read($, mode)) === 'panel' ? 'dialog' : 'panel'
-            await update($, mode, () => nextMode)
-            await $.store.set('mode', nextMode).catch(() => undefined)
-          }}>{m === 'panel' ? 'Questions open here · use dialog' : 'Questions open in the dialog · use panel'}</Button>
-        </Box>
+          </Box>
+        ) : null}
       </Box>
     )
 
@@ -851,9 +1015,10 @@ export const register: Register = on => {
           </Box>
           {resumeCard}
           {summaryCard}
+          {ring(p.steps, p.title || 'Progress')}
+          {stepsList(p.steps)}
           {cpBlock}
           {whereBlock}
-          {planBlock}
           {script}
           {activityToggle}
           {expanded ? activity : null}
@@ -861,14 +1026,18 @@ export const register: Register = on => {
         </Box>
       )
     }
+    // Working: the ring and Claude's own words first; files and raw actions fold away behind one button.
     return (
       <Box flexDirection="column">
         {header}
-        {planBlock}
+        {ring(p.steps, p.title || 'Progress')}
+        {narrationBlock}
+        {stepsList(p.steps)}
         {script}
-        {whereBlock}
-        {activity}
         {cpBlock}
+        {activityToggle}
+        {expanded ? whereBlock : null}
+        {expanded ? activity : null}
         {summaryCard}
         {talk}
       </Box>

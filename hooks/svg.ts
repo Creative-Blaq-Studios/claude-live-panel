@@ -42,6 +42,31 @@ export function railSvg(steps: Step[], width: number): { source: string; alt: st
   return { source: s, alt: `${done} of ${steps.length} steps done${current ? `; now on: ${current.title}` : ''}`, height }
 }
 
+/** How much of the plan is done, as a ring: sage for the steps done, a pulsing clay arc for the one running now. */
+export function ringSvg(steps: Step[], size: number): { source: string; alt: string } {
+  const done = steps.filter(s => s.status === 'done').length
+  const now = steps.find(s => s.status === 'active' || s.status === 'failed')
+  const stroke = Math.max(6, Math.round(size / 10))
+  const r = (size - stroke) / 2
+  const c = 2 * Math.PI * r
+  const arc = (n: number) => (n / Math.max(1, steps.length)) * c
+  const mid = size / 2
+  const circle = (color: string, opacity: number, dash?: string, offset = 0) =>
+    `<circle cx="${mid}" cy="${mid}" r="${r.toFixed(1)}" fill="none" stroke="${color}" stroke-width="${stroke}" opacity="${opacity}"` +
+    (dash ? ` stroke-dasharray="${dash}" stroke-dashoffset="${offset.toFixed(1)}" transform="rotate(-90 ${mid} ${mid})"` : '')
+  let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${STYLE}`
+  s += `${circle(C.pending, 0.25)}/>`
+  if (done) s += `${circle(C.done, 1, `${arc(done).toFixed(1)} ${c.toFixed(1)}`)}/>`
+  if (now) {
+    s += `${circle(C[now.status], 1, `${arc(1).toFixed(1)} ${c.toFixed(1)}`, -arc(done))}>`
+    s += now.status === 'active' ? `<animate attributeName="opacity" values="1;0.5;1" dur="1.6s" repeatCount="indefinite"/>` : ''
+    s += `<title>${esc(now.title)}</title></circle>`
+  }
+  s += '</svg>'
+
+  return { source: s, alt: `${done} of ${steps.length} steps done${now ? `; now on: ${now.title}` : ''}` }
+}
+
 /** Where the last 10 minutes went: one bar split by kind of work. Hover a segment for its share. */
 export function activitySvg(shares: Share[], width: number): { source: string; alt: string; height: number } {
   const total = shares.reduce((sum, x) => sum + x.ms, 0)

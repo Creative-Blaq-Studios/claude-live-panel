@@ -61,9 +61,14 @@ export type Ask = {
   questions: AskQuestion[]
   picks: string[][]
   at: number
+  /** With several questions, the one whose tab is open. */
+  tab?: number
 }
 
 export type QuestionMode = 'panel' | 'dialog'
+
+/** One status line in Claude's own voice: what it is doing now, in plain words. */
+export type Narration = { text: string; at: number }
 
 /**
  * The copyable recap offered when Claude finishes or pauses, written from the
@@ -117,6 +122,8 @@ declare module 'claude-code' {
       openCheckpoint: string
       recapScope: RecapScope
       resume: Checkpoint | null
+      narration: Narration[]
+      narrateOn: boolean
     }
   }
 }

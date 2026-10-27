@@ -285,6 +285,52 @@ export function steClean(text: string): string {
     .replace(/[\u00A0\u2009\u202F]/g, ' ')
 }
 
+const DOING: Record<Kind, string> = {
+  read: 'Reading the code',
+  search: 'Searching the code',
+  edit: 'Changing the code',
+  run: 'Running a command',
+  web: 'Researching online',
+  agent: 'Helpers are working',
+  you: 'Waiting for you',
+  plan: 'Planning the work',
+  other: 'Working',
+}
+
+/** What Claude is doing now, in a few plain words, from its latest action. Free and instant: no model call. */
+export function nowDoing(calls: Call[]): string {
+  const last = [...calls].reverse().find(c => !c.isHelper) ?? calls[calls.length - 1]
+  if (!last) return 'Getting started'
+  const what = `${last.detail} ${last.input ?? ''}`.toLowerCase()
+  if (last.kind === 'run' && /\b(test|tests|jest|vitest|pytest|mocha|spec)\b/.test(what)) return 'Running the tests'
+  if (last.kind === 'run' && /\b(tsc|typecheck|lint|eslint|build)\b/.test(what)) return 'Checking the code'
+  if (last.kind === 'edit' && /(test|spec)/.test((last.target ?? last.detail).toLowerCase())) return 'Writing tests'
+
+  return DOING[last.kind]
+}
+
+/** How a narration is written: a status line in Claude's own voice that a person can take in at a glance. */
+export const NARRATE_SYSTEM =
+  'You write the live status line for a person who watches an AI coding agent work. Write one or two short ' +
+  'sentences in the first person, as the agent. Say what you are doing now, in plain words that a person who ' +
+  'does not program understands. Name the feature or the part of the app, not files, commands, tools or code. ' +
+  'If the next step is known, end with a short sentence that starts with "Next". Use fewer than 35 words. ' +
+  'Use only plain ASCII characters. No preamble.'
+
+/** What the narration is written from: the plan, the latest actions, and the last line, so it says what changed. */
+export function narrationPrompt(plan: Plan, calls: Call[], previous: string): string {
+  const steps = plan.steps.map((s, i) => `${i + 1}. [${s.status}] ${s.title}`).join('\n')
+  const recent = calls
+    .filter(c => !c.isHelper)
+    .slice(-12)
+    .map(c => `- ${c.label}${c.detail ? `: ${clip(c.detail, 80)}` : ''}${c.isError ? ' (failed)' : ''}`)
+    .join('\n')
+  return (
+    `Task: ${plan.title || 'not named'}\nPlan:\n${steps || '(no plan)'}\nLatest actions, oldest first:\n${recent || '(none)'}\n` +
+    (previous ? `Your last status line was: "${previous}". Do not repeat it. Say what changed.` : '')
+  )
+}
+
 /** What Claude is asked to write when a checkpoint is saved. */
 export const CHECKPOINT_PROMPT =
   'Write a checkpoint for this session. First write one sentence that tells where the work stands now. ' +
