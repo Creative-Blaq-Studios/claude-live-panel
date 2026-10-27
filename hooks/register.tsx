@@ -186,12 +186,69 @@ async function setEffort($: EngineInterface, level: EffortLevel | ''): Promise<v
   $.ui.toast(level ? `Effort set to ${EFFORT_LABEL[level]} from Claude's next step.` : 'Effort back to the session setting.')
 }
 
+const PLUGIN_ID = 'live-view@claude-live-panel'
+const MARKETPLACE = 'claude-live-panel'
+const LATEST_MANIFEST = 'https://raw.githubusercontent.com/Creative-Blaq-Studios/claude-live-panel/main/.claude-plugin/plugin.json'
+const DAY = 24 * 60 * 60 * 1000
+
+const versionOf = (json: string) => {
+  const v = (JSON.parse(json) as { version?: unknown }).version
+  return typeof v === 'string' ? v : ''
+}
+const isNewer = (a: string, b: string) => {
+  const pa = a.split('.').map(Number)
+  const pb = b.split('.').map(Number)
+  for (let i = 0; i < 3; i++) if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) > (pb[i] ?? 0)
+  return false
+}
+
+/** This copy's version, and the newest one on GitHub ('' when it can't be read). */
+async function versions($: EngineInterface): Promise<{ own: string; latest: string }> {
+  const own = await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`).then(versionOf).catch(() => '')
+  const res = await $.http.fetch(LATEST_MANIFEST).catch(() => undefined)
+  const latest = res?.ok ? (() => { try { return versionOf(res.text) } catch { return '' } })() : ''
+  return { own, latest }
+}
+
+/** Gets the newest version from GitHub through Claude Code's own plugin commands. */
+async function updatePlugin($: EngineInterface): Promise<string> {
+  // A copy loaded from a folder (a clone, --plugin-dir) is not the installed plugin: git updates it.
+  if (!$.plugin.root.includes('/.claude/plugins/cache/')) {
+    return `This copy of the panel loads from ${$.plugin.root}, not from the installed plugin. To update it, get the latest files from GitHub (for example, git pull in that folder).`
+  }
+  const { own, latest } = await versions($)
+  if (latest && own && !isNewer(latest, own)) return `The Live panel is up to date (version ${own}).`
+  const claude = (await $.env.get('CLAUDE_CODE_EXECPATH').catch(() => undefined)) || 'claude'
+  $.ui.toast('Getting the newest Live panel from GitHub…')
+  const refresh = await $.process.run([claude, 'plugin', 'marketplace', 'update', MARKETPLACE], { timeoutMs: 120_000 }).catch((err: unknown) => ({ exitCode: -1, stdout: '', stderr: String(err) }))
+  if (refresh.exitCode !== 0) return `Couldn't reach the plugin list on GitHub. ${clip(refresh.stderr.trim() || refresh.stdout.trim(), 200)}`
+  const run = await $.process.run([claude, 'plugin', 'update', PLUGIN_ID, '--json', '-y'], { timeoutMs: 180_000 }).catch((err: unknown) => ({ exitCode: -1, stdout: '', stderr: String(err) }))
+  const line = run.stdout.trim().split('\n').pop() ?? ''
+  let result: { outcome?: string; updateOutcome?: string; newVersion?: string; message?: string } = {}
+  try {
+    result = JSON.parse(line)
+  } catch {}
+  if (run.exitCode !== 0 || result.outcome !== 'ok') return `The update did not work. ${clip(result.message || run.stderr.trim() || line, 200)} You can also update it with /plugin.`
+  if (result.updateOutcome !== 'updated') return `The Live panel is up to date (version ${result.newVersion || own}).`
+  return `The Live panel is updated to version ${result.newVersion}. Type /reload-plugins, or start a new session, to use it.`
+}
+
+/** Once a day, tells you when GitHub has a newer version. */
+async function checkForUpdate($: EngineInterface): Promise<void> {
+  const checkedAt = await $.store.get('updateCheckedAt').catch(() => undefined)
+  if (typeof checkedAt === 'number' && Date.now() - checkedAt < DAY) return
+  await $.store.set('updateCheckedAt', Date.now()).catch(() => undefined)
+  const { own, latest } = await versions($)
+  if (!own || !latest || !isNewer(latest, own)) return
+  $.ui.toast(`Live panel ${latest} is available. Type /live update to get it.`)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'live',
       description: 'Open the Live panel: progress, what Claude is doing, effort level, and questions for you',
-      argumentHint: '[pause | checkpoint | effort low|medium|high|xhigh|max|session | summary [changes|next] [all] | summaries on|off | narrate on|off | watch <file> | unwatch | questions panel|dialog]',
+      argumentHint: '[pause | checkpoint | effort low|medium|high|xhigh|max|session | summary [changes|next] [all] | summaries on|off | narrate on|off | watch <file> | unwatch | questions panel|dialog | update | version]',
     })
     const savedMode = await $.store.get('mode').catch(() => undefined)
     if (savedMode === 'panel' || savedMode === 'dialog') await update($, mode, () => savedMode)
@@ -208,6 +265,7 @@ export const register: Register = on => {
     if ((await $.store.get('narrate').catch(() => undefined)) === false) await update($, narrateOn, () => false)
     const autoOpen = await $.store.get('autoOpen').catch(() => undefined)
     if (autoOpen !== false) void openPane($)
+    void checkForUpdate($).catch(() => undefined)
 
     // The live loop: follow a progress file, keep timers ticking while work runs, and narrate now and then.
     let lastText = ''
@@ -301,6 +359,12 @@ export const register: Register = on => {
       await update($, narrateOn, () => arg === 'on')
       await $.store.set('narrate', arg === 'on').catch(() => undefined)
       return { text: `The Live panel will ${arg === 'on' ? '' : 'no longer '}show short updates from Claude in plain words while it works.` }
+    }
+    if (verb === 'update') return { text: await updatePlugin($) }
+    if (verb === 'version') {
+      const { own, latest } = await versions($)
+      const tail = latest && own && isNewer(latest, own) ? ` Version ${latest} is available. Type /live update to get it.` : latest ? ' It is the newest version.' : ''
+      return { text: `This is the Live panel version ${own || 'unknown'}.${tail}` }
     }
     if (verb === 'autoopen' && (arg === 'on' || arg === 'off')) {
       await $.store.set('autoOpen', arg === 'on').catch(() => undefined)

@@ -2,6 +2,14 @@
 
 This file tells about the changes in each version of the Live panel.
 
+## 1.4.0 (2026-10-27)
+
+### Added
+
+- The `/live update` command. It gets the newest version of the panel from GitHub.
+- The `/live version` command. It shows the version of the panel, and tells you if a newer version is available.
+- One time each day, the panel looks for a newer version on GitHub. When there is a newer version, a message tells you.
+
 ## 1.3.0 (2026-10-27)
 
 ### Added

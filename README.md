@@ -98,6 +98,8 @@ The panel opens when a session starts. If you close it, type `/live` to open it 
 | `/live questions panel` | Shows the questions from Claude in the panel. This is the default. |
 | `/live questions dialog` | Shows the questions from Claude in the usual dialog. |
 | `/live autoopen off` | Stops the panel from opening when a session starts. Use `on` to start it again. |
+| `/live update` | Gets the newest version of the panel from GitHub. |
+| `/live version` | Shows the version of the panel, and tells you if a newer version is available. |
 
 The panel keeps your settings for all sessions.
 
@@ -119,6 +121,21 @@ A script can write a JSON progress file. The panel reads the file one time each 
 The `status` value must be `done`, `active`, `pending` or `failed`.
 
 Type `/live watch <path to the file>` to show the progress.
+
+## Update the panel
+
+Type `/live update`. The panel gets the newest version from GitHub. Then type `/reload-plugins`, or start a new session, to use the new version.
+
+One time each day, the panel looks for a newer version on GitHub. When there is a newer version, a message tells you.
+
+If you loaded the panel from a local folder, `/live update` does not change the folder. Get the latest files from GitHub, for example with `git pull`.
+
+You can also update the panel in a terminal with these commands:
+
+```
+claude plugin marketplace update claude-live-panel
+claude plugin update live-view@claude-live-panel
+```
 
 ## Remove the panel
 
