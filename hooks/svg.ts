@@ -10,6 +10,11 @@ const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 const STYLE = `<style>@media (prefers-reduced-motion:reduce){animate{display:none}}</style>`
 
 /**
+ * Bars are drawn this wide and stretch across: the surface fits them to the panel's width.
+ */
+export const BAR_WIDTH = 800
+
+/**
  * The plan as a rail: one segment per step (sage done, clay now, faint
  * waiting, brick failed). Hovering a segment names the step. Depends only on
  * the steps, so it stays put between real changes.
@@ -24,7 +29,7 @@ export function railSvg(steps: Step[], width: number): { source: string; alt: st
   const gap = shown.length > 16 ? 2 : 4
   const segW = Math.max(3, (width - gap * (shown.length - 1)) / Math.max(1, shown.length))
   const height = 22
-  let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${STYLE}`
+  let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">${STYLE}`
   shown.forEach((step, i) => {
     const x = (i * (segW + gap)).toFixed(1)
     const isNow = step.status === 'active'
@@ -74,7 +79,7 @@ export function activitySvg(shares: Share[], width: number): { source: string; a
   const gap = 2
   const usable = width - gap * Math.max(0, shares.length - 1)
   let x = 0
-  let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`
+  let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">`
   for (const share of shares) {
     const w = Math.max(4, (share.ms / Math.max(1, total)) * usable)
     s += `<rect x="${x.toFixed(1)}" y="1" width="${w.toFixed(1)}" height="14" rx="4" fill="${share.color}"><title>${esc(`${share.label}: ${duration(share.ms)} (${Math.round((share.ms / total) * 100)}%)`)}</title></rect>`

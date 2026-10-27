@@ -99,6 +99,8 @@ export type Checkpoint = {
   status: 'writing' | 'ready' | 'error'
   summary: string
   snapshot: Snapshot
+  /** The questions still open when it was saved: a decision left for later, such as how to carry out a plan. */
+  pending?: AskQuestion[]
 }
 
 declare module 'claude-code' {

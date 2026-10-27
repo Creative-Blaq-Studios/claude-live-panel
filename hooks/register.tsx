@@ -1,12 +1,13 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Ask, Call, Checkpoint, EffortLevel, Engine, Feed, Narration, Plan, QuestionMode, RecapScope, Snapshot, Step, Summary, SummaryKind, Turn } from '../types'
+import type { Ask, AskQuestion, Call, Checkpoint, EffortLevel, Engine, Feed, Narration, Plan, QuestionMode, RecapScope, Snapshot, Step, Summary, SummaryKind, Turn } from '../types'
 import type { Tone } from './model'
 import {
   activityShares,
   answerText,
   CHECKPOINT_PROMPT,
+  decisionNote,
   choiceFromWrapUp,
   classify,
   clip,
@@ -34,7 +35,7 @@ import {
   steClean,
   timeLeft,
 } from './model'
-import { activitySvg, railSvg, ringSvg } from './svg'
+import { activitySvg, BAR_WIDTH, railSvg, ringSvg } from './svg'
 
 const PANE = 'live-view'
 const RECAP_PANE = 'live-view-recap'
@@ -116,7 +117,7 @@ const checkpointKey = async ($: EngineInterface) => `checkpoints:${await $.sessi
  * Saves a checkpoint: a snapshot of the panel now, and a short recap of the work since the last one.
  * With `pause`, Claude stops first. The checkpoint is also kept for later sessions in this project.
  */
-async function saveCheckpoint($: EngineInterface, pause: boolean): Promise<Checkpoint> {
+async function saveCheckpoint($: EngineInterface, pause: boolean, pending: AskQuestion[] = []): Promise<Checkpoint> {
   const t = await read($, turn)
   if (pause && t.isRunning && t.turnId) await $.turn.abort({ turnId: t.turnId }).catch(() => undefined)
   const list = await read($, checkpoints)
@@ -130,30 +131,45 @@ async function saveCheckpoint($: EngineInterface, pause: boolean): Promise<Check
     steps: p.steps.map(st => ({ title: st.title, status: st.status })),
     filesChanged: places(section).filter(pl => pl.creates + pl.edits > 0).map(pl => pl.name),
     actions: section.length,
-    health: pause ? 'Paused' : health({ hasAsk: false, isRunning: false, hadTurn: true, steps: p.steps, calls: allCalls }, now).label,
+    health: pending.length ? 'Waiting for your decision' : pause ? 'Paused' : health({ hasAsk: false, isRunning: false, hadTurn: true, steps: p.steps, calls: allCalls }, now).label,
   }
-  const cp: Checkpoint = { id: `cp${now}`, at: now, since: last?.at ?? (t.startedAt || now), status: 'writing', summary: '', snapshot }
+  const cp: Checkpoint = { id: `cp${now}`, at: now, since: last?.at ?? (t.startedAt || now), status: 'writing', summary: '', snapshot, ...(pending.length ? { pending } : {}) }
   await update($, checkpoints, l => [...l, cp].slice(-20))
   await update($, openCheckpoint, () => cp.id)
-  const reply = await $.model.fork({ prompt: CHECKPOINT_PROMPT + sectionNote(last, section) + STE_RULES }).catch(() => undefined)
+  const reply = await $.model.fork({ prompt: CHECKPOINT_PROMPT + sectionNote(last, section) + decisionNote(pending) + STE_RULES }).catch(() => undefined)
   const text = reply?.isAnswered ? steClean(reply.text).trim() : ''
   const done: Checkpoint = { ...cp, status: text ? 'ready' : 'error', summary: text || "Couldn't write the recap for this checkpoint. The snapshot is saved." }
   await update($, checkpoints, l => l.map(c => (c.id === cp.id ? done : c)))
-  if (done.status === 'ready') {
+  // A decision left for later is kept even without its recap: the next session needs the question.
+  if (done.status === 'ready' || pending.length) {
     const key = await checkpointKey($)
     const stored = await $.store.get(key).catch(() => undefined)
     const prev = Array.isArray(stored) ? (stored as Checkpoint[]) : []
     await $.store.set(key, [...prev, done].slice(-10)).catch(() => undefined)
   }
-  $.ui.toast(pause ? 'Paused. Checkpoint saved.' : 'Checkpoint saved.')
+  $.ui.toast(pending.length ? 'Checkpoint saved. Decide when you come back, in this session or the next.' : pause ? 'Paused. Checkpoint saved.' : 'Checkpoint saved.')
   return done
 }
 
-/** Asks Claude to pick up the work from a checkpoint. */
-async function continueFrom($: EngineInterface, cp: Checkpoint): Promise<void> {
+/**
+ * Asks Claude to pick up the work from a checkpoint. With a decision left open, `choice` is the
+ * option the person picked now; without one, Claude asks the question again.
+ */
+async function continueFrom($: EngineInterface, cp: Checkpoint, choice?: string): Promise<void> {
   await update($, resume, () => null)
   const when = `${new Date(cp.at).toDateString().slice(4, 10)} ${clock(cp.at).slice(0, 5)}`
-  await send($, `Continue from this checkpoint (saved ${when}). Start with the "Continue with" step.\n\n${cp.summary}`)
+  const open = cp.pending ?? []
+  const decision =
+    choice && open[0] ? `For "${open[0].question}", I chose: ${choice}. ` : open.length ? `First ask me again: ${open.map(q => q.question).join(' ')} ` : ''
+  await send($, `Continue from this checkpoint (saved ${when}). ${decision}Start with the "Continue with" step.\n\n${cp.summary}`)
+}
+
+/** Leaves Claude's question open: saves a checkpoint that keeps it, to decide in this session or the next. */
+async function decideLater($: EngineInterface): Promise<void> {
+  const a = await read($, ask)
+  if (!a) return
+  await update($, ask, () => null)
+  await saveCheckpoint($, false, a.questions)
 }
 
 /** Copies the summary; where the surface can't, puts it in the message box to copy from there. */
@@ -284,7 +300,7 @@ export const register: Register = on => {
       }
       const t = await read($, turn)
       const active = f.steps.some(s => s.status === 'active')
-      if (t.isRunning || active) await update($, tick, () => Date.now())
+      if (t.isRunning || active || (await read($, ask))) await update($, tick, () => Date.now())
 
       // A new line when the step changes, else at most once a minute, and only after new actions.
       if (!t.isRunning || isNarrating || !(await read($, narrateOn))) return
@@ -539,7 +555,7 @@ export const register: Register = on => {
     // 1. Health, time, model and effort: always on top.
     const model = eng.model || t.model
     const effortNow = eng.effort ? (EFFORT_LABEL[eng.effort] ?? eng.effort) : ''
-    const timeText = t.isRunning ? duration(now - t.startedAt) : t.endedAt ? `took ${duration(t.endedAt - t.startedAt)}` : ''
+    const timeText = a ? `waiting ${duration(now - a.at)}` : t.isRunning ? duration(now - t.startedAt) : t.endedAt ? `took ${duration(t.endedAt - t.startedAt)}` : ''
     // VS Code fills every Button that is not dim: there, a dim Button is the quiet, outlined one.
     const isVscode = e.surface === 'vscode'
     const header = (
@@ -578,7 +594,7 @@ export const register: Register = on => {
     const card = a && q ? (
       <Box key="ask" flexDirection="column" borderStyle="round" borderColor={PAL.now} paddingX={1} paddingY={1} marginTop={1} gap={1}>
         <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
-          <Text bold color={PAL.now}>Claude needs you{isTabbed ? ` · ${a.questions.length} questions` : ''}</Text>
+          <Text bold color={PAL.now}>{isTabbed ? `${a.questions.length} questions` : q.header || (a.source === 'reply' ? 'Claude asked' : 'Question')}</Text>
           <Button key={`${a.id}-skip`} plain dimColor onPress={() => update($, ask, () => null)}>Dismiss</Button>
         </Box>
         {isTabbed ? (
@@ -593,8 +609,6 @@ export const register: Register = on => {
               )
             })}
           </Box>
-        ) : q.header ? (
-          <Text dimColor>{q.header}</Text>
         ) : null}
         <Box key={`${a.id}-q${tab}`} flexDirection="column" gap={1}>
           <Text bold wrap="wrap">{q.question}</Text>
@@ -660,7 +674,7 @@ export const register: Register = on => {
         {Input ? (
           <Input
             key={`${a.id}-own`}
-            placeholder={q.options.length ? 'Or reply in your own words' : 'Type your reply'}
+            placeholder={q.options.length ? 'Or type your answer' : 'Type your reply'}
             submitLabel="Send"
             onSubmit={async (value: string) => {
               const cur = await read($, ask)
@@ -668,13 +682,16 @@ export const register: Register = on => {
             }}
           />
         ) : null}
-        {a.source === 'question' ? (
-          <Button key="mode" plain dimColor onPress={async () => {
-            const nextMode = (await read($, mode)) === 'panel' ? 'dialog' : 'panel'
-            await update($, mode, () => nextMode)
-            await $.store.set('mode', nextMode).catch(() => undefined)
-          }}>{m === 'panel' ? 'Ask me in the usual dialog instead' : 'Ask me here in the panel'}</Button>
-        ) : null}
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+          <Button key={`${a.id}-later`} plain dimColor onPress={() => decideLater($)}>Decide later · save checkpoint</Button>
+          {a.source === 'question' ? (
+            <Button key="mode" plain dimColor onPress={async () => {
+              const nextMode = (await read($, mode)) === 'panel' ? 'dialog' : 'panel'
+              await update($, mode, () => nextMode)
+              await $.store.set('mode', nextMode).catch(() => undefined)
+            }}>{m === 'panel' ? 'Ask me in the usual dialog instead' : 'Ask me here in the panel'}</Button>
+          ) : null}
+        </Box>
       </Box>
     ) : null
 
@@ -725,11 +742,11 @@ export const register: Register = on => {
 
     // 4. Progress: a rail with one segment per step (hover a segment for its name), then Now / Next / time left.
     const rail = (key: string, steps: Step[]) => {
-      const drawn = Svg ? railSvg(steps, px) : undefined
+      const drawn = Svg ? railSvg(steps, BAR_WIDTH) : undefined
       if (Svg && drawn) {
         return (
           <Box key={`${key}-drawing`} flexDirection="column">
-            <Svg source={drawn.source} alt={drawn.alt} width={px} height={drawn.height} isInteractive />
+            <Svg source={drawn.source} alt={drawn.alt} height={drawn.height} isInteractive />
           </Box>
         )
       }
@@ -763,7 +780,7 @@ export const register: Register = on => {
             <Text wrap="truncate-end">
               <Text color={PAL.now} bold>Now: </Text>
               {active.title}
-              {active.startedAt !== undefined ? <Text color={PAL.now}> · {duration(now - active.startedAt)}</Text> : null}
+              {!compact && active.startedAt !== undefined ? <Text color={PAL.now}> · {duration(now - active.startedAt)}</Text> : null}
             </Text>
           ) : null}
           {!compact && nextStep ? <Text dimColor wrap="truncate-end">Next: {nextStep.title}</Text> : null}
@@ -857,7 +874,7 @@ export const register: Register = on => {
     // 5. Activity: where the time went, then the latest actions; click one for everything about it.
     const shares = activityShares(list)
     const total = shares.reduce((sum, x) => sum + x.ms, 0)
-    const drawnActivity = Svg && shares.length ? activitySvg(shares, px) : undefined
+    const drawnActivity = Svg && shares.length ? activitySvg(shares, BAR_WIDTH) : undefined
     const rowsShown = expanded ? 20 : 4
     const recent = list.slice(-rowsShown).reverse()
     const barWidth = Math.max(10, Math.min(40, cols - 4))
@@ -894,7 +911,7 @@ export const register: Register = on => {
         </Box>
         {drawnActivity && Svg ? (
           <Box key="activity-drawing" flexDirection="column">
-            <Svg source={drawnActivity.source} alt={drawnActivity.alt} width={px} height={drawnActivity.height} isInteractive />
+            <Svg source={drawnActivity.source} alt={drawnActivity.alt} height={drawnActivity.height} isInteractive />
           </Box>
         ) : shares.length ? (
           <Text>
@@ -960,15 +977,46 @@ export const register: Register = on => {
     // Checkpoints: pause and save where things stand, recap just that section, pick it up later.
     const railText = (steps: { status: string }[]) =>
       steps.slice(0, 40).map(st => (st.status === 'done' ? '█' : st.status === 'active' ? '●' : st.status === 'failed' ? '✕' : '░')).join('')
+    // A decision left for later: the question, its options, and one button per option to continue with it.
+    const choicesOf = (cp: Checkpoint) => (cp.pending?.length === 1 ? cp.pending[0]!.options : [])
+    const decision = (cp: Checkpoint, where: string) => {
+      const open = cp.pending ?? []
+      if (open.length === 0) return null
+      const options = choicesOf(cp)
+      const pick = options.findIndex(o => /\(recommended\)\s*$/i.test(o.label))
+      return (
+        <Box key={`${where}-decide-${cp.id}`} flexDirection="column" gap={1} marginTop={1}>
+          <Text bold color={PAL.now}>{open.length > 1 ? 'Decisions to make' : 'Decision to make'}</Text>
+          {open.map((q, qi) => (
+            <Text key={`${where}-q-${cp.id}-${qi}`} wrap="wrap">{q.question}</Text>
+          ))}
+          {options.map((o, oi) => {
+            const label = o.label.replace(/\s*\(recommended\)\s*$/i, '')
+            const isMain = oi === (pick >= 0 ? pick : 0)
+            return (
+              <Box key={`${where}-opt-${cp.id}-${oi}`} flexDirection="column">
+                <Button key={`${where}-go-${cp.id}-${oi}`} variant={isMain ? 'primary' : 'secondary'} dimColor={isVscode && !isMain} onPress={() => continueFrom($, cp, label)}>
+                  Continue with {label}
+                  {oi === pick ? <Text color={PAL.now}> · Recommended</Text> : null}
+                </Button>
+                {o.description ? <Box paddingLeft={2}><Text dimColor wrap="wrap">{o.description}</Text></Box> : null}
+              </Box>
+            )
+          })}
+        </Box>
+      )
+    }
+    const continueLabel = (cp: Checkpoint) => (cp.pending?.length ? 'Continue and ask me again' : 'Continue from here')
     const cpDetail = (cp: Checkpoint) => (
       <Box key={`cp-detail-${cp.id}`} flexDirection="column" borderStyle="round" borderColor={cp.status === 'error' ? PAL.failed : PAL.done} paddingX={1}>
         {cp.status === 'writing' ? <Text color={PAL.now}>Writing the recap for this checkpoint…</Text> : <Markdown key={`cp-text-${cp.id}`} text={cp.summary} />}
         <Text dimColor>Snapshot: {cp.snapshot.health} · {cp.snapshot.steps.filter(st => st.status === 'done').length} of {cp.snapshot.steps.length} steps · {cp.snapshot.actions} actions</Text>
         {cp.snapshot.steps.length ? <Text color={PAL.done}>{railText(cp.snapshot.steps)}</Text> : null}
         {cp.snapshot.filesChanged.length ? <Text dimColor wrap="wrap">Files changed: {cp.snapshot.filesChanged.slice(0, 8).join(', ')}{cp.snapshot.filesChanged.length > 8 ? ' and more' : ''}</Text> : null}
-        {cp.status === 'ready' ? (
+        {decision(cp, 'cp')}
+        {cp.status === 'ready' || cp.pending?.length ? (
           <Box flexDirection="row" gap={1} flexWrap="wrap">
-            <Button key={`cp-continue-${cp.id}`} variant="primary" onPress={() => continueFrom($, cp)}>Continue from here</Button>
+            <Button key={`cp-continue-${cp.id}`} variant={choicesOf(cp).length ? 'secondary' : 'primary'} dimColor={isVscode && choicesOf(cp).length > 0} onPress={() => continueFrom($, cp)}>{continueLabel(cp)}</Button>
             <Button key={`cp-copy-${cp.id}`} dimColor={isVscode} onPress={press => copyText($, cp.summary, press.surface)}>Copy</Button>
           </Box>
         ) : null}
@@ -991,7 +1039,9 @@ export const register: Register = on => {
             <Button key={`cp-${cp.id}`} plain dimColor={isVscode} onPress={() => update($, openCheckpoint, cur => (cur === cp.id ? '' : cp.id))}>
               <Text color={cp.status === 'ready' ? PAL.done : cp.status === 'writing' ? PAL.now : PAL.failed}>◆ </Text>
               #{cps.indexOf(cp) + 1} · {clock(cp.at).slice(0, 5)}
-              <Text dimColor> · {cp.snapshot.steps.filter(st => st.status === 'done').length}/{cp.snapshot.steps.length} steps · {cp.snapshot.filesChanged.length} files changed {cpOpen === cp.id ? '▾' : '▸'}</Text>
+              <Text dimColor> · {cp.snapshot.steps.filter(st => st.status === 'done').length}/{cp.snapshot.steps.length} steps · {cp.snapshot.filesChanged.length} files changed</Text>
+              {cp.pending?.length ? <Text color={PAL.now}> · decision open</Text> : null}
+              <Text dimColor> {cpOpen === cp.id ? '▾' : '▸'}</Text>
             </Button>
             {cpOpen === cp.id ? cpDetail(cp) : null}
           </Box>
@@ -1003,8 +1053,9 @@ export const register: Register = on => {
         <Text bold color={PAL.now}>Last time, you stopped here</Text>
         <Text dimColor>Checkpoint from {new Date(back.at).toDateString().slice(4, 10)} at {clock(back.at).slice(0, 5)}</Text>
         <Markdown key="resume-text" text={back.summary} />
+        {decision(back, 'resume')}
         <Box flexDirection="row" gap={1} flexWrap="wrap">
-          <Button key="resume-continue" variant="primary" onPress={() => continueFrom($, back)}>Continue from here</Button>
+          <Button key="resume-continue" variant={choicesOf(back).length ? 'secondary' : 'primary'} dimColor={isVscode && choicesOf(back).length > 0} onPress={() => continueFrom($, back)}>{continueLabel(back)}</Button>
           <Button key="resume-dismiss" dimColor onPress={() => update($, resume, () => null)}>Dismiss</Button>
         </Box>
       </Box>
@@ -1012,9 +1063,11 @@ export const register: Register = on => {
 
     // In the "needs you" and "finished" states activity folds away behind one button.
     const activityToggle = (
-      <Button key="toggle-activity" plain dimColor onPress={() => update($, showDetails, v => !v)}>
-        {expanded ? 'Hide what Claude did' : 'Show what Claude did'}
-      </Button>
+      <Box key="toggle-activity-row" flexDirection="row" marginTop={1}>
+        <Button key="toggle-activity" plain dimColor onPress={() => update($, showDetails, v => !v)}>
+          {expanded ? '▾ Hide what Claude did' : '▸ Show what Claude did'}
+        </Button>
+      </Box>
     )
 
     // 6. Talk to Claude without the chat.
@@ -1066,7 +1119,6 @@ export const register: Register = on => {
           {script}
           {activityToggle}
           {expanded ? activity : null}
-          {talk}
         </Box>
       )
     }

@@ -337,6 +337,17 @@ export const CHECKPOINT_PROMPT =
   'Then write up to 5 short bullets with the work that was done in this section. ' +
   'End with one line that starts with "Continue with:" and tells the next step. Use fewer than 120 words. '
 
+/** Tells Claude a decision is left open, so the checkpoint names it and does not make it. */
+export function decisionNote(questions: AskQuestion[]): string {
+  if (questions.length === 0) return ''
+  const list = questions.map(q => `- ${q.question}${q.options.length ? ` (options: ${q.options.map(o => o.label).join('; ')})` : ''}`).join('\n')
+  return (
+    'The work now waits for a decision from the person, who will decide in a later session. Do not make the decision. ' +
+    'Before the "Continue with:" line, write one line that starts with "Decide:" and names the decision and its options.\n' +
+    `Open decisions:\n${list}\n`
+  )
+}
+
 /** Tells Claude which part of the session to cover: only the work after the last checkpoint. */
 export function sectionNote(last: { at: number; summary: string } | undefined, actions: Call[]): string {
   if (!last) return ''

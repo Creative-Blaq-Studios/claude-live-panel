@@ -2,6 +2,21 @@
 
 This file tells about the changes in each version of the Live panel.
 
+## 1.5.0 (2026-10-27)
+
+### Added
+
+- Decide later. The question card has a Decide later · save checkpoint button. The checkpoint keeps the question and its options. In the same session or in a new session, push Continue with and an option to continue with that choice.
+
+### Changed
+
+- When Claude needs you, the panel shows one reply box, in the question card. The second message box is not shown.
+- When Claude needs you, the top of the panel shows how long Claude has waited, not how long the task took.
+- The question card shows the label of the question as its title, not "Claude needs you" again.
+- The progress bar and the activity bar fill the width of the panel.
+- When Claude waits or is done, the timer of the current step is not shown.
+- Show what Claude did has a marker and a row of its own.
+
 ## 1.4.0 (2026-10-27)
 
 ### Added

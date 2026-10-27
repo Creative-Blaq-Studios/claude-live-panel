@@ -35,6 +35,12 @@ A checkpoint divides the session into sections. After a checkpoint, a recap tell
 
 The panel keeps the checkpoints for each project. When you start a new session in the same project, the panel shows the last checkpoint. Push Continue from here to continue the work.
 
+### Decide later
+
+Sometimes Claude asks a question that you do not want to answer now. For example, when a plan is finished, Claude can ask if the plan must be carried out with subagents or in the session. Push Decide later · save checkpoint in the question card. The panel saves a checkpoint that keeps the question and its options.
+
+When you come back, in the same session or in a new session, the checkpoint shows the decision. Push Continue with and the option that you select. Claude continues from the checkpoint with your choice. Push Continue and ask me again to see the question again.
+
 ## Requirements
 
 You must have Claude Code version 2.1.299 or later.
