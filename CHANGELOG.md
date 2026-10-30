@@ -2,6 +2,19 @@
 
 This file tells about the changes in each version of the Live panel.
 
+## 1.8.1 (2026-10-31)
+
+### Fixed
+
+- With the light look in a dark app, or the dark look in a light app, some parts were not visible: the Light and Dark buttons, the Effort menu, Pause and Save, the answer buttons, the folding sections and the message box. The panel now paints only its cards, and the buttons, menus and the message box sit outside the cards, on the background of the app.
+
+### Changed
+
+- The cards have more space inside them and between them.
+- The dial card also shows how much of the task is done, the number of steps done and the number of files changed.
+- Steps is open at first.
+- The Now card shows what Claude does now, and Claude's two updates before the latest one.
+
 ## 1.8.0 (2026-10-31)
 
 ### Added

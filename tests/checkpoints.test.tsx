@@ -277,7 +277,7 @@ test('the Light and Dark toggle sets the look for later sessions; the terminal k
   await term.unmount()
 })
 
-test('a folding section opens on a press and shows its detail', async ($, on) => {
+test('Steps is open from the start; a press folds a section or opens it', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
   await $.turn.start({ text: 'Go', turnId: 't1' })
@@ -285,8 +285,43 @@ test('a folding section opens on a press and shows its detail', async ($, on) =>
 
   const ui = await $.ui.mount({ ...PANE, surface: 'vscode' })
   expect(await ui.find({ text: /1 of 2 · 50%/ })).toBeDefined()
-  expect(await ui.find({ text: /^✓ $/ })).toBeUndefined()
-  await ui.press({ key: 'sec-steps-toggle' })
   expect(await ui.find({ text: /Build the dial/ })).toBeDefined()
+  await ui.press({ key: 'sec-steps-toggle' })
+  expect(await ui.find({ text: /Build the dial/ })).toBeUndefined()
+  await ui.press({ key: 'sec-activity-toggle' })
+  expect(await ui.find({ text: /Show all recent actions|Nothing yet|Planning|Updating the plan/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('no button, menu or text field sits on a painted card, in either look', async ($, on) => {
+  engine(on)
+  on('agent.spawn', async () => ({ model: 'claude-opus-5-5', agentId: 'ag1' }) as never)
+  await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'Go', turnId: 't1' })
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: [{ content: 'Build the dial', status: 'in_progress' }] } as never)
+  await $.agent.spawn({ prompt: 'Review', description: 'Review the dial', background: true } as never)
+
+  type Node = { type: string; props?: Record<string, unknown>; children?: (Node | string)[] }
+  const controlsOnPaint = (node: Node | string, painted = false): string[] => {
+    if (typeof node === 'string') return []
+    const isPainted = painted || node.props?.backgroundColor !== undefined
+    const own = isPainted && ['Button', 'Select', 'Input'].includes(node.type) ? [`${node.type} ${String(node.props?.key ?? '')}`] : []
+    return [...own, ...(node.children ?? []).flatMap(child => controlsOnPaint(child, isPainted))]
+  }
+  const paintedCards = (node: Node | string): number =>
+    typeof node === 'string' ? 0 : (node.props?.backgroundColor !== undefined ? 1 : 0) + (node.children ?? []).reduce((n, child) => n + paintedCards(child), 0)
+  for (const look of ['theme-light', 'theme-dark'] as const) {
+    for (const surface of ['desktop', 'vscode'] as const) {
+      const ui = await $.ui.mount({ ...PANE, surface })
+      await ui.press({ key: look })
+      const tree = (await ui.drawn()) as unknown as Node
+      expect(paintedCards(tree)).toBeGreaterThan(0)
+      expect(controlsOnPaint(tree)).toEqual([])
+      await ui.unmount()
+    }
+  }
+  await $.turn.complete({ answer: 'Shall I ship it?', durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(controlsOnPaint((await ui.drawn()) as unknown as Node)).toEqual([])
   await ui.unmount()
 })
