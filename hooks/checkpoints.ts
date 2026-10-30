@@ -1,4 +1,4 @@
-import type { Checkpoint, Step } from '../types'
+import type { AskQuestion, Checkpoint, Step } from '../types'
 
 /** How often the panel saves a checkpoint on its own, unless the person picks another time. */
 export const DEFAULT_AUTOSAVE = 30 * 60_000
@@ -58,6 +58,25 @@ export function pruneSaved(list: Checkpoint[], now: number): Checkpoint[] {
   const drop = new Set(fresh.filter(c => !c.pending?.length).slice(0, extra).map(c => c.id))
   return fresh.filter(c => !drop.has(c.id))
 }
+
+/**
+ * The one option of a decision that a message names outright ("go with inline execution"), matched as
+ * a whole phrase; undefined when it names none, or more than one.
+ */
+export function namedOption(questions: AskQuestion[], text: string): string | undefined {
+  const words = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+  const said = ` ${words(text)} `
+  const labels = new Set(questions.flatMap(q => q.options.map(o => o.label.replace(/\s*\(recommended\)\s*$/i, '').trim())).filter(label => label.length >= 3))
+  const named = [...labels].filter(label => said.includes(` ${words(label)} `))
+  return named.length === 1 ? named[0] : undefined
+}
+
+/** How a message is checked against a decision left for later, when it names no option outright. */
+export const DECIDES_SYSTEM = "You check whether a person's message settles a decision that was left open for later. Reply with only YES or NO."
+
+export const decidesPrompt = (questions: AskQuestion[], text: string) =>
+  questions.map(q => `Decision: "${q.question}"${q.options.length ? `\nOptions: ${q.options.map(o => o.label).join('; ')}` : ''}`).join('\n') +
+  `\nThe person's message:\n<<<\n${text.slice(0, 1500)}\n>>>\nDoes this message choose an option, or otherwise settle the decision?`
 
 /** The checkpoint with its decision made: the person continued from it, so it is no longer kept for that. */
 export const settleDecision = (list: Checkpoint[], id: string) =>

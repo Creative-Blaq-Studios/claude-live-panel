@@ -69,6 +69,8 @@ Sometimes Claude asks a question that you do not want to answer now. For example
 
 When you come back, in the same session or in a new session, the checkpoint shows the decision. Push Continue with and the option that you select. Claude continues from the checkpoint with your choice. Push Continue and ask me again to see the question again.
 
+You can also answer the decision in the chat. When your message names one of the options, or the small fast model finds that your message settles the decision, the panel marks the decision as made. A message tells you when this occurs.
+
 ## Where the panel keeps its data
 
 The panel keeps its data in one JSON file on your computer: `~/.claude/plugins/store/live-view_<name>.json`. Claude Code makes this file for the panel. Only your user account can read it. The file is not encrypted.

@@ -2,6 +2,12 @@
 
 This file tells about the changes in each version of the Live panel.
 
+## 1.8.5 (2026-10-31)
+
+### Changed
+
+- A decision that you left for later with Decide later is marked as made when you answer it in the chat. You do not have to push Continue with. When your message names one of the options, the panel marks the decision at once. When it does not, the small fast model checks if your message settles the decision. The panel does this check only while a decision is open. A message tells you when the panel marks a decision. In the next session, the checkpoint no longer shows the decision as open.
+
 ## 1.8.4 (2026-10-31)
 
 ### Changed

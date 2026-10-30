@@ -6,11 +6,14 @@ import { agentEnd, endedTasks, endTask, isPersonsReply, noteAction, QUIET_AFTER,
 import {
   AUTOSAVE_CHOICES,
   CHECKPOINTS,
+  DECIDES_SYSTEM,
+  decidesPrompt,
   DEFAULT_AUTOSAVE,
   everyLabel,
   isAutosaveDue,
   isTaskFinished,
   lastManual,
+  namedOption,
   parseEvery,
   pruneSaved,
   replacedAutos,
@@ -258,15 +261,41 @@ async function continueFrom($: EngineInterface, cp: Checkpoint, choice?: string)
   const when = `${new Date(cp.at).toDateString().slice(4, 10)} ${clock(cp.at).slice(0, 5)}`
   const open = cp.pending ?? []
   // The decision now goes on in the chat: the checkpoint no longer keeps it open, here or on disk.
-  if (open.length) {
-    await update($, checkpoints, l => settleDecision(l, cp.id))
-    const key = await checkpointKey($)
-    const stored = await $.store.get(key).catch(() => undefined)
-    if (Array.isArray(stored)) await $.store.set(key, settleDecision(stored as Checkpoint[], cp.id)).catch(() => undefined)
-  }
+  if (open.length) await settle($, cp.id)
   const decision =
     choice && open[0] ? `For "${open[0].question}", I chose: ${choice}. ` : open.length ? `First ask me again: ${open.map(q => q.question).join(' ')} ` : ''
   await send($, `Continue from this checkpoint (saved ${when}). ${decision}Start with the "Continue with" step.\n\n${cp.summary}`)
+}
+
+/** Marks a checkpoint's decision as made, in this session and on disk. */
+async function settle($: EngineInterface, id: string): Promise<void> {
+  await update($, checkpoints, l => settleDecision(l, id))
+  await update($, resume, cur => (cur?.id === id ? (settleDecision([cur], id)[0] ?? cur) : cur))
+  const key = await checkpointKey($)
+  const stored = await $.store.get(key).catch(() => undefined)
+  if (Array.isArray(stored)) await $.store.set(key, settleDecision(stored as Checkpoint[], id)).catch(() => undefined)
+}
+
+/**
+ * The person wrote to Claude: if the message settles a decision left for later, mark it made. A message
+ * that names one option settles it outright; otherwise the small fast model is asked, and only while a
+ * decision is open.
+ */
+async function settleFromReply($: EngineInterface, text: string): Promise<void> {
+  const stored = await $.store.get(await checkpointKey($)).catch(() => undefined)
+  const open = new Map<string, Checkpoint>()
+  for (const cp of [...(Array.isArray(stored) ? (stored as Checkpoint[]) : []), ...(await read($, checkpoints))]) if (cp.pending?.length) open.set(cp.id, cp)
+  for (const cp of open.values()) {
+    const pending = cp.pending ?? []
+    let isDecided = namedOption(pending, text) !== undefined
+    if (!isDecided) {
+      const reply = await $.model.complete({ model: 'haiku', system: DECIDES_SYSTEM, prompt: decidesPrompt(pending, text), maxTokens: 5 }).catch(() => undefined)
+      isDecided = !!reply?.isAnswered && /^\s*yes\b/i.test(reply.text)
+    }
+    if (!isDecided) continue
+    await settle($, cp.id)
+    $.ui.toast(`Marked as decided in the chat: ${clip(pending[0]?.question ?? 'the decision left for later', 90)}`)
+  }
 }
 
 /** Leaves Claude's question open: saves a checkpoint that keeps it, to decide in this session or the next. */
@@ -723,7 +752,10 @@ export const register: Register = on => {
     }
     // The person wrote to Claude, in the chat or anywhere else: an open question card is answered, or
     // no longer the question. A notice they did not type, and a slash command, leave it open.
-    if (isPersonsReply(e)) await update($, ask, () => null)
+    if (isPersonsReply(e)) {
+      await update($, ask, () => null)
+      void settleFromReply($, e.text).catch(() => undefined)
+    }
     return next(e)
   }).catch(($, e, next) => next(e))
 

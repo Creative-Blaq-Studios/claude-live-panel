@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { everyLabel, isAutosaveDue, isTaskFinished, lastManual, parseEvery, pruneSaved, replacedAutos } from '../hooks/checkpoints'
+import { everyLabel, isAutosaveDue, isTaskFinished, lastManual, namedOption, parseEvery, pruneSaved, replacedAutos } from '../hooks/checkpoints'
 import { sessionLength, sessionLine } from '../hooks/model'
 import type { Checkpoint } from '../types'
 
@@ -384,4 +384,52 @@ test('a question card closes when the person writes to Claude in the chat', asyn
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ text: /Which look first\?/ })).toBeUndefined()
   await ui.unmount()
+})
+
+const HOW = {
+  question: 'Carry out the plan with subagents or in this session?',
+  header: 'How',
+  options: [{ label: 'Subagent-driven (Recommended)' }, { label: 'Inline execution' }],
+  multiSelect: false,
+}
+
+test('a message that names exactly one option of a decision settles it outright', async () => {
+  expect(namedOption([HOW], 'Go with inline execution, please.')).toBe('Inline execution')
+  expect(namedOption([HOW], 'subagent-driven is fine')).toBe('Subagent-driven')
+  expect(namedOption([HOW], 'Either subagent-driven or inline execution')).toBeUndefined()
+  expect(namedOption([HOW], 'Make the dial bigger')).toBeUndefined()
+})
+
+test('a chat reply settles a decision left for later, here and on disk; an unrelated one does not', async ($, on) => {
+  const { store, clock } = engine(on, { autosave: 0, [KEY]: [cp({ id: 'later', at: Date.now(), pending: [HOW] })] })
+  on('prompt.submit', (_, e) => ({ text: e.text }) as never)
+  const verdicts: string[] = []
+  on('model.complete', (_, e) => {
+    const isAboutIt = /work the plan one task at a time/i.test((e as { prompt: string }).prompt)
+    verdicts.push(isAboutIt ? 'yes' : 'no')
+    return { value: { isAnswered: true, text: isAboutIt ? 'YES' : 'NO', usage: {} } } as never
+  })
+  await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
+
+  await $.prompt.submit({ text: 'Make the dial a bit bigger.' } as never)
+  await clock.settle()
+  expect((store.get(KEY) as Checkpoint[])[0]?.pending?.length).toBe(1)
+
+  await $.prompt.submit({ text: 'Work the plan one task at a time, right here.' } as never)
+  await clock.settle()
+  expect((store.get(KEY) as Checkpoint[])[0]?.pending).toBeUndefined()
+  expect(verdicts).toEqual(['no', 'yes'])
+})
+
+test('a chat reply that names an option settles the decision without asking the model', async ($, on) => {
+  const { store, clock } = engine(on, { autosave: 0, [KEY]: [cp({ id: 'later', at: Date.now(), pending: [HOW] })] })
+  on('prompt.submit', (_, e) => ({ text: e.text }) as never)
+  let asked = 0
+  on('model.complete', () => (asked++, { value: { isAnswered: true, text: 'NO', usage: {} } }) as never)
+  await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
+
+  await $.prompt.submit({ text: 'Inline execution.' } as never)
+  await clock.settle()
+  expect((store.get(KEY) as Checkpoint[])[0]?.pending).toBeUndefined()
+  expect(asked).toBe(0)
 })
