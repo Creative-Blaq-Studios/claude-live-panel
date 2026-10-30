@@ -2,6 +2,19 @@
 
 This file tells about the changes in each version of the Live panel.
 
+## 1.8.6 (2026-10-31)
+
+### Fixed
+
+- When Claude's turn ended but background work continued, the dial stopped at the time of the turn. Now the dial shows Still working and continues to count from the start of the turn, with an arc that turns. The corner of the card shows how long the turn took.
+- The text under the time in the dial went over the ring when it was long. Now the text is shorter, and its size changes so that it fits inside the ring.
+- In Running in the background, a long action line moved the timer of a task to a line of its own. Now the timer is on the line with the name of the task.
+
+### Changed
+
+- The Session tile counts in hours, minutes and seconds, for example 3:26:14, so you can see that it counts.
+- The ring of a running background task is an arc that turns while the task works.
+
 ## 1.8.5 (2026-10-31)
 
 ### Changed

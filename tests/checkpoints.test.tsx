@@ -145,7 +145,7 @@ test('the Session tile shows how long the session has run and when it started, o
 
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ text: /^2h 31m$/ })).toBeDefined()
+    expect(await ui.find({ text: /^2:31:0\d$/ })).toBeDefined()
     expect(await ui.find({ text: /^since (\w{3} \d{1,2}, )?\d\d:\d\d$/ })).toBeDefined()
     await ui.unmount()
   }
@@ -432,4 +432,22 @@ test('a chat reply that names an option settles the decision without asking the 
   await clock.settle()
   expect((store.get(KEY) as Checkpoint[])[0]?.pending).toBeUndefined()
   expect(asked).toBe(0)
+})
+
+test('after a turn, the dial keeps counting while its background work runs, and its note fits the ring', async ($, on) => {
+  engine(on, { autosave: 0 })
+  on('agent.spawn', async () => ({ model: 'claude-opus-5-5', agentId: 'ag1' }) as never)
+  await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'Go', turnId: 't1' })
+  await $.agent.spawn({ prompt: 'Implement Task 5', description: 'Implement Task 5: removal votes and reminders', background: true } as never)
+  await $.turn.complete({ answer: 'Task 5 runs in the background.', durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer' })
+
+  for (const surface of ['terminal', 'desktop', 'vscode'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(await ui.find({ text: /^Still working$/ })).toBeDefined()
+    expect(await ui.find({ text: /^turn took 0:0\d$/ })).toBeDefined()
+    expect(await ui.find({ text: /^Last turn$/ })).toBeUndefined()
+    if (surface === 'terminal') expect(await ui.find({ text: /^in background$/ })).toBeDefined()
+    await ui.unmount()
+  }
 })

@@ -44,7 +44,6 @@ import {
   planFromTool,
   replyFromText,
   sectionNote,
-  sessionLength,
   sessionLine,
   STE_RULES,
   places,
@@ -1045,11 +1044,16 @@ export const register: Register = on => {
     const where = places(list)
     const changedCount = where.filter(pl => pl.creates + pl.edits > 0).length
     // A finished turn's ring shows the share of the steps done, which the progress line under it names too.
+    // While its background work goes on, the dial keeps counting from the turn's start, with a turning arc.
+    const isStillWorking = state === 'finished' && bgRunning > 0
+    const dialMs = isStillWorking ? now - t.startedAt : turnMs
     const stepShare = p.steps.length ? doneSteps / p.steps.length : 1
     const fraction = state === 'finished' ? stepShare : left !== undefined ? turnMs / Math.max(1, turnMs + left) : p.steps.length ? stepShare : 0
-    const dialNote = state === 'finished' ? (bgRunning ? 'waiting on background work' : 'turn finished') : left !== undefined ? `about ${duration(left)} left` : 'this turn'
-    const stepNote =
-      state === 'finished' ? `ended ${clock(t.endedAt).slice(0, 5)}` : p.steps.length ? (active ? `Step ${activeAt + 1} of ${p.steps.length}` : `${doneSteps} of ${p.steps.length} steps`) : ''
+    const dialTitle = isStillWorking ? 'Still working' : state === 'finished' ? 'Last turn' : 'This turn'
+    const dialNote = isStillWorking ? 'in background' : state === 'finished' ? 'turn finished' : left !== undefined ? `about ${duration(left)} left` : 'this turn'
+    const stepNote = isStillWorking
+      ? `turn took ${clockTime(turnMs)}`
+      : state === 'finished' ? `ended ${clock(t.endedAt).slice(0, 5)}` : p.steps.length ? (active ? `Step ${activeAt + 1} of ${p.steps.length}` : `${doneSteps} of ${p.steps.length} steps`) : ''
     const progressNote = [
       p.steps.length ? `${Math.round((doneSteps / p.steps.length) * 100)}% done` : '',
       p.steps.length ? `${doneSteps} of ${p.steps.length} steps` : '',
@@ -1057,20 +1061,34 @@ export const register: Register = on => {
     ].filter(Boolean).join(' · ')
     const dialSize = Math.min(210, Math.max(150, Math.round(px * 0.55)))
     const drawnDial = Svg
-      ? dialSvg({ fraction, time: clockTime(turnMs), note: dialNote, color: state === 'finished' && stepShare >= 1 ? k.done : k.accent, track: k.track, tick: k.tick, ink: k.ink ?? '#1E1C1A', muted: k.muted ?? '#5F5A54', knob: k.surface ?? '#FFFFFF' }, dialSize)
+      ? dialSvg(
+          {
+            fraction,
+            time: clockTime(dialMs),
+            note: dialNote,
+            color: state === 'finished' && stepShare >= 1 && !isStillWorking ? k.done : k.accent,
+            track: k.track,
+            tick: k.tick,
+            ink: k.ink ?? '#1E1C1A',
+            muted: k.muted ?? '#5F5A54',
+            knob: k.surface ?? '#FFFFFF',
+            spin: isStillWorking,
+          },
+          dialSize,
+        )
       : undefined
     const dial = t.startedAt && state !== 'ask' ? (
       <Box key="dial" flexDirection="column" marginTop={2} gap={1}>
         <Box flexDirection="column" alignItems="center" gap={1} paddingX={2} paddingY={1} {...paint}>
           <Box flexDirection="row" justifyContent="space-between" width="100%" gap={1}>
-            <Text bold {...kInk}>{state === 'finished' ? 'Last turn' : 'This turn'}</Text>
+            <Text bold {...kInk}>{dialTitle}</Text>
             <Text {...kMuted}>{stepNote}</Text>
           </Box>
           {Svg && drawnDial ? (
             <Svg key="dial-drawing" source={drawnDial.source} alt={drawnDial.alt} width={dialSize} height={dialSize} />
           ) : (
             <Box flexDirection="column" alignItems="center">
-              <Text size="title" weight="bold" tabular {...kInk}>{clockTime(turnMs)}</Text>
+              <Text size="title" weight="bold" tabular {...kInk}>{clockTime(dialMs)}</Text>
               <Text {...kMuted}>{dialNote}</Text>
             </Box>
           )}
@@ -1099,7 +1117,7 @@ export const register: Register = on => {
     )
     const tiles = (
       <Box key="tiles" flexDirection="row" gap={2} marginTop={2}>
-        {began ? tile('tile-session', 'Session', sessionLength(now - began), `since ${startDay}${clock(began).slice(0, 5)}`, false) : null}
+        {began ? tile('tile-session', 'Session', clockTime(now - began), `since ${startDay}${clock(began).slice(0, 5)}`, false) : null}
         {tile('tile-autosave', 'Next auto-save', nextSave, every > 0 ? `${everyLabel(every).toLowerCase()} · ${cps.length} saved` : 'Turn it on in Checkpoints', every > 0 && dueIn !== undefined)}
       </Box>
     )
@@ -1148,19 +1166,26 @@ export const register: Register = on => {
           const isRunning = b.status === 'running'
           const isQuiet = isRunning && quietFor(b, now) > QUIET_AFTER
           const color = isRunning ? (isQuiet ? k.quiet : b.kind === 'shell' ? k.done : k.accent) : b.status === 'done' ? k.done : b.status === 'failed' ? k.failed : k.line
-          const ring = Svg && isRunning ? miniRingSvg(((now - b.startedAt) % 60_000) / 60_000, color, k.track, 26) : undefined
+          const ring = Svg && isRunning ? miniRingSvg(color, k.track, 24) : undefined
+          // The timer sits on the title's line, so a long action line under it never pushes it down.
           return (
-            <Box key={`bg-${b.id}`} flexDirection="row" gap={1} alignItems="center">
+            <Box key={`bg-${b.id}`} flexDirection="row" gap={1} alignItems="flex-start">
               {Svg && ring ? (
-                <Svg key={`bg-ring-${b.id}`} source={ring.source} alt="" width={26} height={26} />
+                <Svg key={`bg-ring-${b.id}`} source={ring.source} alt="" width={24} height={24} />
               ) : (
                 <Text color={color}>{isRunning ? '●' : b.status === 'done' ? '✓' : b.status === 'failed' ? '✕' : '■'}</Text>
               )}
               <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
-                <Text wrap="truncate-end" bold={isRunning} {...(isRunning ? kInk : kMuted)}>{b.kind === 'shell' ? 'Command: ' : ''}{b.title}</Text>
+                <Box flexDirection="row" justifyContent="space-between" gap={1}>
+                  <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                    <Text wrap="truncate-end" bold={isRunning} {...(isRunning ? kInk : kMuted)}>{b.kind === 'shell' ? 'Command: ' : ''}{b.title}</Text>
+                  </Box>
+                  <Box flexShrink={0}>
+                    <Text bold tabular {...(isRunning ? kInk : kMuted)}>{clockTime((b.endedAt ?? now) - b.startedAt)}</Text>
+                  </Box>
+                </Box>
                 <Text wrap="truncate-end" {...(isQuiet ? { color: k.quiet } : kMuted)}>{bgLine(b)}{isQuiet ? ' · quiet for a while' : ''}</Text>
               </Box>
-              <Text bold tabular {...(isRunning ? kInk : kMuted)}>{clockTime((b.endedAt ?? now) - b.startedAt)}</Text>
             </Box>
           )
         })}
