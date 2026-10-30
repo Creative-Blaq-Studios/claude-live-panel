@@ -15,6 +15,7 @@ Refer to [CHANGELOG.md](CHANGELOG.md) for the changes in each version.
 | Part | What it shows |
 | --- | --- |
 | Health signal | One word that tells you the status: Needs you, Failed, Finished, Slow, On track, Working or Ready. |
+| Session time | When the session started and how long it has run, for example "Session · started 09:14 · 2h 31m". It shows at the top of the panel at all times. |
 | Model and effort | The model that does the work and its effort level. Use the Effort menu to change the level. |
 | Questions | The questions that Claude asks you. When there are several, each question has a tab. Push an answer button or type an answer, then push Send answers. |
 | Progress | A ring that shows how much of the task is done. It also shows the time spent, the time left, the current step and the next step. |
@@ -25,22 +26,63 @@ Refer to [CHANGELOG.md](CHANGELOG.md) for the changes in each version.
 | Activity | A bar that shows how Claude used the last 10 minutes. It also shows the latest actions. |
 | Action details | Click an action to see the full command or file. You also see the result or the error. |
 | Recap | When Claude stops, the panel can write a recap. Select Summary, What changed or What's next. The recap uses ASD-STE100 Simplified Technical English. Push Copy to copy it, or push Open full view to read it in a tab. |
-| Checkpoints | Push Pause and save checkpoint to stop Claude and save the status. The checkpoint has a short recap and a snapshot of the panel. Push Continue from here to start again from it. |
+| Checkpoints | Push Pause and save checkpoint to stop Claude and save the status. The checkpoint has a short recap and a snapshot of the panel. Push Continue from here to start again from it. The panel also saves checkpoints by itself. Use the Auto-save menu to set how often. |
 | Message box | Type a message to Claude. Push Stop Claude to stop the work. |
 
 Hold the pointer on a part of a bar to see more data.
 
 ## Checkpoints and recaps
 
-A checkpoint divides the session into sections. After a checkpoint, a recap tells only about the work after that checkpoint. Push Whole session to get a recap of all of the session.
+A checkpoint that you save divides the session into sections. After it, a recap tells only about the work after that checkpoint. Push Whole session to get a recap of all of the session.
 
 The panel keeps the checkpoints for each project. When you start a new session in the same project, the panel shows the last checkpoint. Push Continue from here to continue the work.
+
+### Session time
+
+The top of the panel shows when the session started and how long it has run. The time includes breaks. When you resume a session, the time counts from the first start of that session. After `/clear`, the time starts again. When the session started on a different day, the date shows too.
+
+### Automatic checkpoints
+
+You do not have to save each checkpoint yourself. The panel saves a checkpoint by itself:
+
+- Every 30 minutes, if Claude did work after the last checkpoint. When there is no new work, the panel does not save a checkpoint.
+- When all of the steps in Claude's task list are done.
+
+An automatic checkpoint has the label Auto. It tells about all of the work after the last checkpoint that you saved. Each new automatic checkpoint replaces the automatic checkpoint before it, so the list stays short. When you save a checkpoint, it replaces the automatic checkpoints before it. Automatic checkpoints do not divide the session into sections.
+
+Use the Auto-save menu in the Checkpoints part of the panel to set the time: every 15 minutes, 30 minutes, hour or 2 hours, or off. You can also type `/live autosave 1h`. The panel keeps your choice for all sessions.
+
+Each checkpoint recap is one request to the model, the same as a checkpoint that you save. If the recap fails, the panel does not keep that automatic checkpoint. The checkpoint before it stays.
 
 ### Decide later
 
 Sometimes Claude asks a question that you do not want to answer now. For example, when a plan is finished, Claude can ask if the plan must be carried out with subagents or in the session. Push Decide later · save checkpoint in the question card. The panel saves a checkpoint that keeps the question and its options.
 
 When you come back, in the same session or in a new session, the checkpoint shows the decision. Push Continue with and the option that you select. Claude continues from the checkpoint with your choice. Push Continue and ask me again to see the question again.
+
+## Where the panel keeps its data
+
+The panel keeps its data in one JSON file on your computer: `~/.claude/plugins/store/live-view_<name>.json`. Claude Code makes this file for the panel. Only your user account can read it. The file is not encrypted.
+
+The file holds:
+
+- Your settings, for example the effort level and the Auto-save time.
+- Up to 10 checkpoints for each project. Each checkpoint is about 1 to 2 KB. It has the recap, the step names, the names of the changed files and any open decision. It does not have the contents of your files.
+
+All of the file can have up to 4 MB. Type `/live checkpoints` to see how much it uses.
+
+The panel cleans up the file one time each day, when a session starts:
+
+- It removes saved checkpoints that are older than 30 days. A checkpoint with an open decision stays until you continue from it.
+- It removes the checkpoints of a project folder that you deleted.
+
+Type `/live checkpoints clear` to delete the saved checkpoints of the project now.
+
+The plan, the actions and Claude's updates are not saved in the file. The panel forgets them when the session ends.
+
+To write a recap, the panel sends one request to the model with the conversation, the same as the chat does. The daily version check gets the version number from GitHub. It does not send your data.
+
+A copy of the panel that you load from a folder with `--plugin-dir` has a different file. Its checkpoints do not show in the installed panel.
 
 ## Requirements
 
@@ -92,6 +134,9 @@ The panel opens when a session starts. If you close it, type `/live` to open it 
 | `/live` | Opens the panel. |
 | `/live pause` | Stops Claude and saves a checkpoint. |
 | `/live checkpoint` | Saves a checkpoint and does not stop Claude. |
+| `/live autosave 30m` | Sets how often the panel saves a checkpoint by itself. Use a time from `10m` to `8h`, for example `1h`, or `off`. |
+| `/live checkpoints` | Tells how many checkpoints are saved for the project, and how much space the data of the panel uses. |
+| `/live checkpoints clear` | Deletes the saved checkpoints of the project. |
 | `/live effort high` | Sets the effort level for the next steps. Use `low`, `medium`, `high`, `xhigh` or `max`. |
 | `/live effort session` | Uses the effort level of the session again. |
 | `/live summary` | Writes a summary of the session. |

@@ -119,6 +119,8 @@ export type Checkpoint = {
   snapshot: Snapshot
   /** The questions still open when it was saved: a decision left for later, such as how to carry out a plan. */
   pending?: AskQuestion[]
+  /** Saved by the panel on its own, on the autosave timer or when a task finished. */
+  isAuto?: boolean
 }
 
 declare module 'claude-code' {
@@ -145,6 +147,10 @@ declare module 'claude-code' {
       narration: Narration[]
       narrateOn: boolean
       background: BgTask[]
+      /** When the session began: its first launch when resumed, the moment of a /clear after one. 0 until known. */
+      sessionStart: number
+      /** How often the panel saves a checkpoint on its own, in milliseconds; 0 is off. */
+      autosave: number
     }
   }
 }

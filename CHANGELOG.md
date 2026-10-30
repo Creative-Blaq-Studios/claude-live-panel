@@ -2,6 +2,24 @@
 
 This file tells about the changes in each version of the Live panel.
 
+## 1.7.0 (2026-10-31)
+
+### Added
+
+- Session time. The top of the panel shows when the session started and how long it has run, for example "Session · started 09:14 · 2h 31m". It shows in all states of the panel. A resumed session counts from its first start. After `/clear`, the time starts again.
+- Automatic checkpoints. The panel saves a checkpoint by itself every 30 minutes, if Claude did work after the last checkpoint. It also saves one when all of the steps in Claude's task list are done. An automatic checkpoint has the label Auto, and each new one replaces the one before it.
+- The Auto-save menu in the Checkpoints part of the panel, and the `/live autosave` command. Set the time from 10 minutes to 8 hours, or set it to off.
+- The `/live checkpoints` command. It tells how many checkpoints are saved for the project, and how much space the data of the panel uses. `/live checkpoints clear` deletes the saved checkpoints of the project.
+- Cleanup. One time each day, the panel removes saved checkpoints older than 30 days, and the checkpoints of project folders that are not there. A checkpoint with an open decision stays until you continue from it.
+- When the panel cannot keep a checkpoint for later sessions, a message tells you.
+
+### Changed
+
+- Recaps count from the last checkpoint that you saved. Automatic checkpoints do not divide the session into sections.
+- When you save a checkpoint, it replaces the automatic checkpoints before it.
+- When you continue from a checkpoint with an open decision, the checkpoint no longer keeps the decision open.
+- `/live` also tells when the session started and how long it has run.
+
 ## 1.6.0 (2026-10-30)
 
 ### Added

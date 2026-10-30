@@ -18,6 +18,22 @@ export function duration(ms: number): string {
   return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`
 }
 
+/** How long the session has run, to the minute: "0m", "14m", "2h 31m", "1d 03h". */
+export function sessionLength(ms: number): string {
+  const m = Math.max(0, Math.floor(ms / 60_000))
+  if (m < 60) return `${m}m`
+  if (m < 24 * 60) return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
+
+  return `${Math.floor(m / 1440)}d ${String(Math.floor((m % 1440) / 60)).padStart(2, '0')}h`
+}
+
+/** "Session · started 09:14 · 2h 31m", with the date when the session began on another day. */
+export function sessionLine(startedAt: number, now: number): string {
+  const start = new Date(startedAt)
+  const day = start.toDateString() === new Date(now).toDateString() ? '' : `${start.toDateString().slice(4, 10)}, `
+  return `Session · started ${day}${start.toTimeString().slice(0, 5)} · ${sessionLength(now - startedAt)}`
+}
+
 const base = (path: string) => path.split('/').filter(Boolean).pop() ?? path
 
 /** What a tool call is doing, in plain words, and which lane of the timeline it sits in. */

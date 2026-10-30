@@ -3,6 +3,19 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Ask, AskQuestion, BgTask, Call, Checkpoint, EffortLevel, Engine, Feed, Narration, Plan, QuestionMode, RecapScope, Snapshot, Step, Summary, SummaryKind, Turn } from '../types'
 import { agentEnd, endedTasks, endTask, noteAction, QUIET_AFTER, quietFor, setShellId, shellIdFrom, startTask, visibleTasks } from './background'
+import {
+  AUTOSAVE_CHOICES,
+  CHECKPOINTS,
+  DEFAULT_AUTOSAVE,
+  everyLabel,
+  isAutosaveDue,
+  isTaskFinished,
+  lastManual,
+  parseEvery,
+  pruneSaved,
+  replacedAutos,
+  settleDecision,
+} from './checkpoints'
 import type { Tone } from './model'
 import {
   activityShares,
@@ -28,6 +41,7 @@ import {
   planFromTool,
   replyFromText,
   sectionNote,
+  sessionLine,
   STE_RULES,
   places,
   SUMMARY_KINDS,
@@ -65,6 +79,13 @@ const resume = atom({ plugin: 'live-view', key: 'resume' } as const, null as Che
 const narration = atom({ plugin: 'live-view', key: 'narration' } as const, [] as Narration[])
 const narrateOn = atom({ plugin: 'live-view', key: 'narrateOn' } as const, true)
 const background = atom({ plugin: 'live-view', key: 'background' } as const, [] as BgTask[])
+const sessionStart = atom({ plugin: 'live-view', key: 'sessionStart' } as const, 0)
+const autosave = atom({ plugin: 'live-view', key: 'autosave' } as const, DEFAULT_AUTOSAVE)
+
+// Automatic checkpoints: one at a time, and a try that failed waits a whole interval before the next.
+let loadedAt = 0
+let autoTriedAt = 0
+let isAutoSaving = false
 
 const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: TITLE }).catch(() => ({ isPlaced: false }))
 /** The recap in a tab of its own, full height, so a long one reads top to bottom. */
@@ -80,15 +101,13 @@ async function send($: EngineInterface, text: string): Promise<void> {
   await $.prompt.submit({ text: body, asUser: true })
 }
 
-const lastReady = (list: Checkpoint[]) => [...list].reverse().find(c => c.status === 'ready')
-
 /**
  * Asks Claude, off to the side, for a recap: a summary, what changed, or what's next.
  * By default it covers only the work since the last checkpoint; 'all' covers the whole session.
  */
 async function writeSummary($: EngineInterface, kind: SummaryKind, scopeArg?: RecapScope): Promise<Summary | null> {
   const at = Date.now()
-  const last = lastReady(await read($, checkpoints))
+  const last = lastManual(await read($, checkpoints))
   const scope: RecapScope = last ? (scopeArg ?? (await read($, recapScope))) : 'all'
   await update($, summary, (): Summary => ({ kind, status: 'loading', text: '', at, scope }))
   const section = scope === 'since' && last ? (await read($, calls)).filter(c => c.startedAt >= last.at) : []
@@ -113,17 +132,20 @@ async function narrate($: EngineInterface): Promise<void> {
 }
 
 /** Where this project's checkpoints are kept between sessions. */
-const checkpointKey = async ($: EngineInterface) => `checkpoints:${await $.session.root().catch(() => 'unknown')}`
+const checkpointKey = async ($: EngineInterface) => `${CHECKPOINTS}${await $.session.root().catch(() => 'unknown')}`
 
 /**
- * Saves a checkpoint: a snapshot of the panel now, and a short recap of the work since the last one.
- * With `pause`, Claude stops first. The checkpoint is also kept for later sessions in this project.
+ * Saves a checkpoint: a snapshot of the panel now, and a short recap of the work since the last one
+ * the person saved. With `pause`, Claude stops first. The checkpoint is also kept for later sessions in
+ * this project. With its recap, it replaces the automatic checkpoints since that last manual one, as it
+ * covers their work again; an automatic one (`isAuto`) without its recap is dropped, and the one before stays.
  */
-async function saveCheckpoint($: EngineInterface, pause: boolean, pending: AskQuestion[] = []): Promise<Checkpoint> {
+async function saveCheckpoint($: EngineInterface, pause: boolean, pending: AskQuestion[] = [], isAuto = false): Promise<Checkpoint> {
   const t = await read($, turn)
   if (pause && t.isRunning && t.turnId) await $.turn.abort({ turnId: t.turnId }).catch(() => undefined)
   const list = await read($, checkpoints)
-  const last = lastReady(list)
+  const last = lastManual(list)
+  const replaces = replacedAutos(list, last)
   const allCalls = await read($, calls)
   const p = await read($, plan)
   const section = allCalls.filter(c => c.startedAt >= (last?.at ?? 0))
@@ -135,22 +157,91 @@ async function saveCheckpoint($: EngineInterface, pause: boolean, pending: AskQu
     actions: section.length,
     health: pending.length ? 'Waiting for your decision' : pause ? 'Paused' : health({ hasAsk: false, isRunning: false, hadTurn: true, steps: p.steps, calls: allCalls }, now).label,
   }
-  const cp: Checkpoint = { id: `cp${now}`, at: now, since: last?.at ?? (t.startedAt || now), status: 'writing', summary: '', snapshot, ...(pending.length ? { pending } : {}) }
+  const began = (await read($, sessionStart)) || t.startedAt || now
+  const cp: Checkpoint = {
+    id: `cp${now}`,
+    at: now,
+    since: last?.at ?? began,
+    status: 'writing',
+    summary: '',
+    snapshot,
+    ...(pending.length ? { pending } : {}),
+    ...(isAuto ? { isAuto: true } : {}),
+  }
   await update($, checkpoints, l => [...l, cp].slice(-20))
-  await update($, openCheckpoint, () => cp.id)
+  if (!isAuto) await update($, openCheckpoint, () => cp.id)
   const reply = await $.model.fork({ prompt: CHECKPOINT_PROMPT + sectionNote(last, section) + decisionNote(pending) + STE_RULES }).catch(() => undefined)
   const text = reply?.isAnswered ? steClean(reply.text).trim() : ''
   const done: Checkpoint = { ...cp, status: text ? 'ready' : 'error', summary: text || "Couldn't write the recap for this checkpoint. The snapshot is saved." }
-  await update($, checkpoints, l => l.map(c => (c.id === cp.id ? done : c)))
+  // A manual checkpoint saved while this one was written has replaced it already.
+  const isReplaced = isAuto && !(await read($, checkpoints)).some(c => c.id === cp.id)
+  if (isAuto && (!text || isReplaced)) {
+    await update($, checkpoints, l => l.filter(c => c.id !== cp.id))
+    return done
+  }
+  const gone = done.status === 'ready' ? replaces : []
+  await update($, checkpoints, l => l.filter(c => !gone.includes(c.id)).map(c => (c.id === cp.id ? done : c)))
   // A decision left for later is kept even without its recap: the next session needs the question.
+  let isKept = true
   if (done.status === 'ready' || pending.length) {
     const key = await checkpointKey($)
     const stored = await $.store.get(key).catch(() => undefined)
-    const prev = Array.isArray(stored) ? (stored as Checkpoint[]) : []
-    await $.store.set(key, [...prev, done].slice(-10)).catch(() => undefined)
+    const prev = Array.isArray(stored) ? (stored as Checkpoint[]).filter(c => !gone.includes(c.id)) : []
+    isKept = await $.store.set(key, pruneSaved([...prev, done], now)).then(() => true, () => false)
   }
-  $.ui.toast(pending.length ? 'Checkpoint saved. Decide when you come back, in this session or the next.' : pause ? 'Paused. Checkpoint saved.' : 'Checkpoint saved.')
+  if (!isKept) $.ui.toast("Couldn't keep this checkpoint for later sessions. It stays in the panel until the session closes. Type /live checkpoints to see what is saved.")
+  else if (!isAuto) $.ui.toast(pending.length ? 'Checkpoint saved. Decide when you come back, in this session or the next.' : pause ? 'Paused. Checkpoint saved.' : 'Checkpoint saved.')
   return done
+}
+
+/** Saves an automatic checkpoint, unless one is being written now. */
+function autoCheckpoint($: EngineInterface): void {
+  if (isAutoSaving) return
+  isAutoSaving = true
+  autoTriedAt = Date.now()
+  void saveCheckpoint($, false, [], true)
+    .catch(() => undefined)
+    .finally(() => {
+      isAutoSaving = false
+    })
+}
+
+/** Once a day: drops saved checkpoints older than 30 days (an open decision stays), and the lists of project folders that are gone. */
+async function cleanUpSaved($: EngineInterface): Promise<void> {
+  const cleanedAt = await $.store.get('cleanedAt').catch(() => undefined)
+  if (typeof cleanedAt === 'number' && Date.now() - cleanedAt < DAY) return
+  await $.store.set('cleanedAt', Date.now()).catch(() => undefined)
+  const now = Date.now()
+  for (const key of await $.store.keys().catch(() => [] as string[])) {
+    if (!key.startsWith(CHECKPOINTS)) continue
+    const folder = key.slice(CHECKPOINTS.length)
+    // Only a folder that is surely not there: a stat refused for another reason leaves the list as it is.
+    const isGone = /^(\/|[A-Za-z]:[\\/])/.test(folder) && (await $.fs.stat(folder).then(() => false, (err: unknown) => /ENOENT/.test(String((err as { code?: unknown })?.code ?? err))))
+    const stored = await $.store.get(key).catch(() => undefined)
+    const kept = isGone || !Array.isArray(stored) ? [] : pruneSaved(stored as Checkpoint[], now)
+    if (kept.length === 0) await $.store.delete(key).catch(() => undefined)
+    else if (kept.length !== (stored as unknown[]).length) await $.store.set(key, kept).catch(() => undefined)
+  }
+}
+
+/** What the panel keeps on disk: this project's saved checkpoints, and the size of all of its data. */
+async function storageReport($: EngineInterface): Promise<string> {
+  const key = await checkpointKey($)
+  let bytes = 0
+  let projects = 0
+  for (const k of await $.store.keys().catch(() => [] as string[])) {
+    bytes += k.length + JSON.stringify((await $.store.get(k).catch(() => null)) ?? null).length
+    if (k.startsWith(CHECKPOINTS)) projects++
+  }
+  const own = await $.store.get(key).catch(() => undefined)
+  const count = Array.isArray(own) ? own.length : 0
+  const every = await read($, autosave)
+  return (
+    `This project has ${count} saved checkpoint${count === 1 ? '' : 's'}. Automatic checkpoints: ${everyLabel(every).toLowerCase()}. ` +
+    `All the data of the Live panel uses ${(bytes / 1024).toFixed(1)} KB of 4 MB, with checkpoints for ${projects} project${projects === 1 ? '' : 's'}. ` +
+    'Saved checkpoints older than 30 days are removed, unless a decision in them is open. ' +
+    "Type /live checkpoints clear to delete this project's saved checkpoints."
+  )
 }
 
 /**
@@ -161,6 +252,13 @@ async function continueFrom($: EngineInterface, cp: Checkpoint, choice?: string)
   await update($, resume, () => null)
   const when = `${new Date(cp.at).toDateString().slice(4, 10)} ${clock(cp.at).slice(0, 5)}`
   const open = cp.pending ?? []
+  // The decision now goes on in the chat: the checkpoint no longer keeps it open, here or on disk.
+  if (open.length) {
+    await update($, checkpoints, l => settleDecision(l, cp.id))
+    const key = await checkpointKey($)
+    const stored = await $.store.get(key).catch(() => undefined)
+    if (Array.isArray(stored)) await $.store.set(key, settleDecision(stored as Checkpoint[], cp.id)).catch(() => undefined)
+  }
   const decision =
     choice && open[0] ? `For "${open[0].question}", I chose: ${choice}. ` : open.length ? `First ask me again: ${open.map(q => q.question).join(' ')} ` : ''
   await send($, `Continue from this checkpoint (saved ${when}). ${decision}Start with the "Continue with" step.\n\n${cp.summary}`)
@@ -202,6 +300,12 @@ async function setEffort($: EngineInterface, level: EffortLevel | ''): Promise<v
   await update($, effortChoice, () => level)
   await $.store.set('effortChoice', level).catch(() => undefined)
   $.ui.toast(level ? `Effort set to ${EFFORT_LABEL[level]} from Claude's next step.` : 'Effort back to the session setting.')
+}
+
+/** Sets how often the panel saves a checkpoint by itself, for this session and the next ones; 0 is off. */
+async function setAutosave($: EngineInterface, every: number): Promise<void> {
+  await update($, autosave, () => every)
+  await $.store.set('autosave', every).catch(() => undefined)
 }
 
 const PLUGIN_ID = 'live-view@claude-live-panel'
@@ -266,8 +370,16 @@ export const register: Register = on => {
     await $.command.register({
       name: 'live',
       description: 'Open the Live panel: progress, what Claude is doing, effort level, and questions for you',
-      argumentHint: '[pause | checkpoint | effort low|medium|high|xhigh|max|session | summary [changes|next] [all] | summaries on|off | narrate on|off | watch <file> | unwatch | questions panel|dialog | update | version]',
+      argumentHint:
+        '[pause | checkpoint | checkpoints [clear] | autosave 30m|1h|off | effort low|medium|high|xhigh|max|session | summary [changes|next] [all] | summaries on|off | narrate on|off | watch <file> | unwatch | questions panel|dialog | update | version]',
     })
+    loadedAt = Date.now()
+    autoTriedAt = 0
+    const usage = await $.session.usage().catch(() => undefined)
+    await update($, sessionStart, () => usage?.startedAt || Date.now())
+    const savedEvery = await $.store.get('autosave').catch(() => undefined)
+    if (typeof savedEvery === 'number' && savedEvery >= 0) await update($, autosave, () => savedEvery)
+    await cleanUpSaved($).catch(() => undefined)
     const savedMode = await $.store.get('mode').catch(() => undefined)
     if (savedMode === 'panel' || savedMode === 'dialog') await update($, mode, () => savedMode)
     const savedEffort = await $.store.get('effortChoice').catch(() => undefined)
@@ -291,6 +403,7 @@ export const register: Register = on => {
     let narratedStep = ''
     let isNarrating = false
     let listedAt = 0
+    let usageAt = Date.now()
     $.clock.every(1000, async () => {
       const f = await read($, feed)
       if (f.path !== '') {
@@ -304,7 +417,22 @@ export const register: Register = on => {
       const t = await read($, turn)
       const active = f.steps.some(s => s.status === 'active')
       const waitsOnBackground = (await read($, background)).some(b => b.status === 'running')
-      if (t.isRunning || active || waitsOnBackground || (await read($, ask))) await update($, tick, () => Date.now())
+      // Work redraws every second; an idle panel still moves the session clock along every 15 seconds.
+      const isBusy = t.isRunning || active || waitsOnBackground || !!(await read($, ask))
+      if (isBusy || Date.now() - (await read($, tick)) > 15_000) await update($, tick, () => Date.now())
+      // A /clear starts the session over: read its start again now and then (the call costs nothing).
+      if (Date.now() - usageAt > 30_000) {
+        usageAt = Date.now()
+        const began = (await $.session.usage().catch(() => undefined))?.startedAt
+        if (began) await update($, sessionStart, cur => (cur === began ? cur : began))
+      }
+      // Automatic checkpoints on the timer: only after new work since the last checkpoint.
+      const every = await read($, autosave)
+      if (every > 0 && !isAutoSaving) {
+        const lastAt = Math.max(loadedAt, autoTriedAt, ...(await read($, checkpoints)).map(c => c.at))
+        const workAt = (await read($, calls)).reduce((max, c) => (c.isHelper ? max : Math.max(max, c.startedAt)), 0)
+        if (isAutosaveDue({ every, lastAt, workAt, now: Date.now() })) autoCheckpoint($)
+      }
       // A helper whose end the engine never announced: its loop's own status settles it.
       if (waitsOnBackground && Date.now() - listedAt > 5000) {
         listedAt = Date.now()
@@ -388,6 +516,24 @@ export const register: Register = on => {
       }
       return { text: `${lead}. It is in the Live panel.` }
     }
+    if (verb === 'autosave' && arg !== '') {
+      const every = parseEvery(arg)
+      if (every === undefined) return { text: 'Give a time between 10 minutes and 8 hours, for example /live autosave 30m or /live autosave 1h. Use /live autosave off to stop it.' }
+      await setAutosave($, every)
+      return { text: every ? `The Live panel will save a checkpoint by itself ${everyLabel(every).toLowerCase()} while Claude works, and when a task list is done.` : 'The Live panel will not save checkpoints by itself. Save them with Pause and save checkpoint or /live checkpoint.' }
+    }
+    if (verb === 'checkpoints') {
+      if (arg === 'clear') {
+        const key = await checkpointKey($)
+        const stored = await $.store.get(key).catch(() => undefined)
+        const count = Array.isArray(stored) ? stored.length : 0
+        if (count === 0) return { text: 'This project has no saved checkpoints.' }
+        await $.store.delete(key).catch(() => undefined)
+        await update($, resume, () => null)
+        return { text: `Deleted the ${count} saved checkpoint${count === 1 ? '' : 's'} of this project. The checkpoints of this session stay in the panel until it closes.` }
+      }
+      return { text: await storageReport($) }
+    }
     if (verb === 'narrate' && (arg === 'on' || arg === 'off')) {
       await update($, narrateOn, () => arg === 'on')
       await $.store.set('narrate', arg === 'on').catch(() => undefined)
@@ -404,7 +550,8 @@ export const register: Register = on => {
       return { text: `The Live panel will ${arg === 'on' ? '' : 'not '}open by itself when a session starts.` }
     }
     await openPane($)
-    return { text: 'Live panel opened.' }
+    const began = await read($, sessionStart)
+    return { text: `Live panel opened.${began ? ` ${sessionLine(began, Date.now())}.` : ''}` }
   })
 
   // Every request Claude makes: note the model and effort actually used, and apply the panel's effort choice.
@@ -448,6 +595,11 @@ export const register: Register = on => {
       const waitingOnPanel = (await read($, ask))?.source === 'question'
       if (wanted !== false && !waitingOnPanel) {
         await update($, summary, (cur): Summary | null => (cur && cur.status !== 'offer' ? cur : { kind: 'summary', status: 'offer', text: '', at: Date.now() }))
+      }
+      // The whole task list is done: keep where things stand, without waiting for the timer.
+      if (!e.isAborted && (await read($, autosave)) > 0) {
+        const lastAt = Math.max(0, ...(await read($, checkpoints)).map(c => c.at))
+        if (isTaskFinished((await read($, plan)).steps, lastAt)) autoCheckpoint($)
       }
     }
     return result
@@ -597,7 +749,9 @@ export const register: Register = on => {
     const scopeNow = await read($, recapScope)
     const back = await read($, resume)
     const lines = await read($, narration)
-    const lastCp = lastReady(cps)
+    const began = await read($, sessionStart)
+    const every = await read($, autosave)
+    const lastCp = lastManual(cps)
     await read($, tick)
     const now = Date.now()
     const bg = visibleTasks(await read($, background), now)
@@ -621,6 +775,7 @@ export const register: Register = on => {
           <Text size="heading" weight="semibold" color={tone}>● {signal.label}</Text>
           <Text dimColor tabular>{timeText}</Text>
         </Box>
+        {began ? <Text dimColor size="footnote" tabular>{sessionLine(began, now)}</Text> : null}
         {signal.note ? <Text dimColor wrap="wrap">{signal.note}</Text> : null}
         <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
           {model ? <Text dimColor size="footnote">{model}</Text> : null}
@@ -1067,6 +1222,9 @@ export const register: Register = on => {
       steps.slice(0, 40).map(st => (st.status === 'done' ? '█' : st.status === 'active' ? '●' : st.status === 'failed' ? '✕' : '░')).join('')
     // A decision left for later: the question, its options, and one button per option to continue with it.
     const choicesOf = (cp: Checkpoint) => (cp.pending?.length === 1 ? cp.pending[0]!.options : [])
+    // The menu's times, with one set by /live autosave that the menu does not offer put in its place, before Off.
+    const everyMin = Math.round(every / 60_000)
+    const everyChoices = AUTOSAVE_CHOICES.includes(everyMin) ? AUTOSAVE_CHOICES : [...AUTOSAVE_CHOICES.filter(m => m > 0), everyMin].sort((x, y) => x - y).concat(0)
     const decision = (cp: Checkpoint, where: string) => {
       const open = cp.pending ?? []
       if (open.length === 0) return null
@@ -1116,17 +1274,34 @@ export const register: Register = on => {
           <Text bold>Checkpoints</Text>
           <Text dimColor>{cps.length ? `${cps.length} saved` : 'none yet'}</Text>
         </Box>
-        <Box flexDirection="row" gap={1} flexWrap="wrap">
+        <Box flexDirection="row" gap={1} flexWrap="wrap" alignItems="center">
           <Button key="cp-save" variant={t.isRunning ? 'primary' : 'secondary'} dimColor={isVscode && !t.isRunning} onPress={() => saveCheckpoint($, t.isRunning)}>
             {t.isRunning ? 'Pause and save checkpoint' : 'Save checkpoint'}
           </Button>
+          {Select ? (
+            <Select
+              key="autosave"
+              label="Auto-save"
+              value={String(everyMin)}
+              options={everyChoices.map(min => ({ value: String(min), label: everyLabel(min * 60_000) }))}
+              onSelect={(value: string) => setAutosave($, Number(value) * 60_000)}
+            />
+          ) : (
+            <Text dimColor>Auto-save: {everyLabel(every).toLowerCase()}</Text>
+          )}
         </Box>
-        {cps.length === 0 ? <Text dimColor>Save a checkpoint to recap this part of the work and continue from it later.</Text> : null}
+        {cps.length === 0 ? (
+          <Text dimColor wrap="wrap">
+            Save a checkpoint to recap this part of the work and continue from it later.
+            {every > 0 ? ` The panel also saves one by itself ${everyLabel(every).toLowerCase()} while Claude works, and when a task list is done.` : ''}
+          </Text>
+        ) : null}
         {[...cps].reverse().slice(0, 4).map(cp => (
           <Box key={`cp-row-${cp.id}`} flexDirection="column">
             <Button key={`cp-${cp.id}`} plain dimColor={isVscode} onPress={() => update($, openCheckpoint, cur => (cur === cp.id ? '' : cp.id))}>
               <Text color={cp.status === 'ready' ? PAL.done : cp.status === 'writing' ? PAL.now : PAL.failed}>◆ </Text>
               #{cps.indexOf(cp) + 1} · {clock(cp.at).slice(0, 5)}
+              {cp.isAuto ? <Text dimColor> · Auto</Text> : null}
               <Text dimColor> · {cp.snapshot.steps.filter(st => st.status === 'done').length}/{cp.snapshot.steps.length} steps · {cp.snapshot.filesChanged.length} files changed</Text>
               {cp.pending?.length ? <Text color={PAL.now}> · decision open</Text> : null}
               <Text dimColor> {cpOpen === cp.id ? '▾' : '▸'}</Text>
