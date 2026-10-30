@@ -139,13 +139,14 @@ const tickOn = () => {
   while (Date.now() === from) {}
 }
 
-test('the header shows when the session started and how long it has run, on every surface', async ($, on) => {
+test('the Session tile shows how long the session has run and when it started, on every surface', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
 
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ text: /^Session · started (\w{3} \d{1,2}, )?\d\d:\d\d · 2h 31m$/ })).toBeDefined()
+    expect(await ui.find({ text: /^2h 31m$/ })).toBeDefined()
+    expect(await ui.find({ text: /^since (\w{3} \d{1,2}, )?\d\d:\d\d$/ })).toBeDefined()
     await ui.unmount()
   }
 })
@@ -218,6 +219,8 @@ test('the Auto-save menu sets the interval, where the surface has menus', async 
   await finishTask($, 't1', 'Build the timer')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ key: 'autosave' } as never)).toBeUndefined()
+  await ui.press({ key: 'sec-checkpoints-toggle' })
   await ui.select({ key: 'autosave', value: '60' })
   expect(store.get('autosave')).toBe(60 * 60_000)
   await ui.unmount()
@@ -239,4 +242,51 @@ test('a checkpoint you save replaces the automatic one, and recaps count from yo
 
   await $.command.run({ command: 'live', args: 'checkpoint' } as never)
   expect((await saved(world)).map(c => [c.isAuto ?? false, c.summary])).toEqual([[false, 'Recap 2.']])
+})
+
+test('while Claude works, the dial shows the turn time with Pause, Stop and Save, on every surface', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'Go', turnId: 't1' })
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: [{ content: 'Build the dial', status: 'in_progress' }, { content: 'Ship it', status: 'pending' }] } as never)
+
+  for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(await ui.find({ text: /^This turn$/ })).toBeDefined()
+    expect(await ui.find({ text: /^Step 1 of 2$/ })).toBeDefined()
+    expect(await ui.find({ key: 'dial-stop' } as never)).toBeDefined()
+    expect(await ui.find({ key: 'dial-pause' } as never)).toBeDefined()
+    if (surface === 'terminal') expect(await ui.find({ text: /^0:0\d$/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('the Light and Dark toggle sets the look for later sessions; the terminal keeps its own theme', async ($, on) => {
+  const { store } = engine(on)
+  await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'theme-light' })
+  expect(store.get('theme')).toBe('light')
+  await ui.press({ key: 'theme-dark' })
+  expect(store.get('theme')).toBe('dark')
+  await ui.unmount()
+
+  const term = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await term.find({ key: 'theme-dark' } as never)).toBeUndefined()
+  await term.unmount()
+})
+
+test('a folding section opens on a press and shows its detail', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'Go', turnId: 't1' })
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: [{ content: 'Build the dial', status: 'completed' }, { content: 'Ship it', status: 'in_progress' }] } as never)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'vscode' })
+  expect(await ui.find({ text: /1 of 2 · 50%/ })).toBeDefined()
+  expect(await ui.find({ text: /^✓ $/ })).toBeUndefined()
+  await ui.press({ key: 'sec-steps-toggle' })
+  expect(await ui.find({ text: /Build the dial/ })).toBeDefined()
+  await ui.unmount()
 })

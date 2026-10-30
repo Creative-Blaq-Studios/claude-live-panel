@@ -21,6 +21,7 @@ import {
   activityShares,
   answerText,
   CHECKPOINT_PROMPT,
+  clockTime,
   decisionNote,
   choiceFromWrapUp,
   classify,
@@ -35,12 +36,12 @@ import {
   NARRATE_SYSTEM,
   narrationPrompt,
   nowDoing,
-  PAL,
   parseFeed,
   parseQuestions,
   planFromTool,
   replyFromText,
   sectionNote,
+  sessionLength,
   sessionLine,
   STE_RULES,
   places,
@@ -50,13 +51,14 @@ import {
   steClean,
   timeLeft,
 } from './model'
-import { activitySvg, BAR_WIDTH, railSvg, ringSvg } from './svg'
+import { activitySvg, BAR_WIDTH, dialSvg, hairlineSvg, miniRingSvg, railSvg, segmentsSvg } from './svg'
+import type { ThemeName } from './theme'
+import { DARK, LIGHT, TERMINAL, themeFrom } from './theme'
 
 const PANE = 'live-view'
 const RECAP_PANE = 'live-view-recap'
 const TITLE = 'Live'
 const LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
-const TONE: Record<Tone, string> = { now: PAL.now, failed: PAL.failed, done: PAL.done, slow: '#C9A24A', muted: PAL.waiting }
 
 const plan = atom({ plugin: 'live-view', key: 'plan' } as const, EMPTY_PLAN as Plan)
 const feed = atom({ plugin: 'live-view', key: 'feed' } as const, EMPTY_FEED as Feed)
@@ -81,6 +83,9 @@ const narrateOn = atom({ plugin: 'live-view', key: 'narrateOn' } as const, true)
 const background = atom({ plugin: 'live-view', key: 'background' } as const, [] as BgTask[])
 const sessionStart = atom({ plugin: 'live-view', key: 'sessionStart' } as const, 0)
 const autosave = atom({ plugin: 'live-view', key: 'autosave' } as const, DEFAULT_AUTOSAVE)
+const themeChoice = atom({ plugin: 'live-view', key: 'themeChoice' } as const, '' as '' | ThemeName)
+const appTheme = atom({ plugin: 'live-view', key: 'appTheme' } as const, 'dark' as ThemeName)
+const openSections = atom({ plugin: 'live-view', key: 'openSections' } as const, [] as string[])
 
 // Automatic checkpoints: one at a time, and a try that failed waits a whole interval before the next.
 let loadedAt = 0
@@ -302,6 +307,15 @@ async function setEffort($: EngineInterface, level: EffortLevel | ''): Promise<v
   $.ui.toast(level ? `Effort set to ${EFFORT_LABEL[level]} from Claude's next step.` : 'Effort back to the session setting.')
 }
 
+/** Sets the panel's look, for this session and the next ones. */
+async function setTheme($: EngineInterface, look: ThemeName): Promise<void> {
+  await update($, themeChoice, () => look)
+  await $.store.set('theme', look).catch(() => undefined)
+}
+
+/** Opens a folding section, or closes it when it is open. */
+const toggleSection = ($: EngineInterface, id: string) => update($, openSections, list => (list.includes(id) ? list.filter(x => x !== id) : [...list, id]))
+
 /** Sets how often the panel saves a checkpoint by itself, for this session and the next ones; 0 is off. */
 async function setAutosave($: EngineInterface, every: number): Promise<void> {
   await update($, autosave, () => every)
@@ -379,6 +393,10 @@ export const register: Register = on => {
     await update($, sessionStart, () => usage?.startedAt || Date.now())
     const savedEvery = await $.store.get('autosave').catch(() => undefined)
     if (typeof savedEvery === 'number' && savedEvery >= 0) await update($, autosave, () => savedEvery)
+    const savedLook = await $.store.get('theme').catch(() => undefined)
+    if (savedLook === 'light' || savedLook === 'dark') await update($, themeChoice, () => savedLook)
+    const setting = (await $.config.list().catch(() => [])).find(row => row.key === 'theme')?.value
+    await update($, appTheme, () => themeFrom(setting))
     await cleanUpSaved($).catch(() => undefined)
     const savedMode = await $.store.get('mode').catch(() => undefined)
     if (savedMode === 'panel' || savedMode === 'dialog') await update($, mode, () => savedMode)
@@ -751,6 +769,8 @@ export const register: Register = on => {
     const lines = await read($, narration)
     const began = await read($, sessionStart)
     const every = await read($, autosave)
+    const opened = await read($, openSections)
+    const look: ThemeName = (await read($, themeChoice)) || (await read($, appTheme))
     const lastCp = lastManual(cps)
     await read($, tick)
     const now = Date.now()
@@ -759,42 +779,77 @@ export const register: Register = on => {
     const cols = Math.max(28, (e.props as { bodyColumns?: number }).bodyColumns ?? e.viewport?.columns ?? 48)
     const px = Math.round(Math.min(560, Math.max(260, cols * 7.4)))
 
+    // The terminal keeps the person's own theme and paints no backgrounds; the other surfaces paint the look picked.
+    const isTerminal = e.surface === 'terminal'
+    const c = isTerminal ? TERMINAL : look === 'dark' ? DARK : LIGHT
+    const card = { borderStyle: 'round', borderColor: c.surface ?? c.line, ...(c.surface ? { backgroundColor: c.surface } : {}) } as const
+    const outline = { borderStyle: 'round', borderColor: c.line } as const
+    const TONE: Record<Tone, string> = { now: c.accent, failed: c.failed, done: c.done, slow: c.quiet, muted: c.muted }
+
     const state: 'ask' | 'working' | 'finished' | 'idle' = a ? 'ask' : t.isRunning ? 'working' : t.endedAt ? 'finished' : 'idle'
     const signal = health({ hasAsk: !!a, isRunning: t.isRunning, hadTurn: t.endedAt > 0, steps: p.steps, calls: list }, now)
-    const tone = TONE[signal.tone]
-
-    // 1. Health, time, model and effort: always on top.
-    const model = eng.model || t.model
-    const effortNow = eng.effort ? (EFFORT_LABEL[eng.effort] ?? eng.effort) : ''
-    const timeText = a ? `waiting ${duration(now - a.at)}` : t.isRunning ? duration(now - t.startedAt) : t.endedAt ? `took ${duration(t.endedAt - t.startedAt)}` : ''
     // VS Code fills every Button that is not dim: there, a dim Button is the quiet, outlined one.
     const isVscode = e.surface === 'vscode'
-    const header = (
-      <Box key="hdr" flexDirection="column">
-        <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
-          <Text size="heading" weight="semibold" color={tone}>● {signal.label}</Text>
-          <Text dimColor tabular>{timeText}</Text>
+    const stop = async () => {
+      const cur = await read($, turn)
+      if (cur.isRunning && cur.turnId) await $.turn.abort({ turnId: cur.turnId }).catch(() => undefined)
+    }
+    const railText = (steps: { status: string }[]) =>
+      steps.slice(0, 40).map(st => (st.status === 'done' ? '█' : st.status === 'active' ? '●' : st.status === 'failed' ? '✕' : '░')).join('')
+    // Recaps in the panel's own colors (Markdown takes the app's), so they read on either look.
+    const prose = (key: string, text: string) =>
+      isTerminal ? (
+        <Markdown key={key} text={text} />
+      ) : (
+        <Box key={key} flexDirection="column">
+          {text.split(/\n+/).filter(line => line.trim() !== '').map((line, i) => (
+            <Box key={`${key}-${i}`} flexDirection="column">
+              <Text color={c.ink2} wrap="wrap">{/^\s*[-*]\s+/.test(line) ? `• ${line.replace(/^\s*[-*]\s+/, '')}` : line.replace(/\*\*/g, '')}</Text>
+            </Box>
+          ))}
         </Box>
-        {began ? <Text dimColor size="footnote" tabular>{sessionLine(began, now)}</Text> : null}
-        {signal.note ? <Text dimColor wrap="wrap">{signal.note}</Text> : null}
-        <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
-          {model ? <Text dimColor size="footnote">{model}</Text> : null}
+      )
+
+    // 1. Status, the look, the model and effort: always on top.
+    const model = eng.model || t.model
+    const effortNow = eng.effort ? (EFFORT_LABEL[eng.effort] ?? eng.effort) : ''
+    const timeText = a ? `waiting ${duration(now - a.at)}` : state === 'finished' ? `took ${duration(t.endedAt - t.startedAt)}` : ''
+    const header = (
+      <Box key="hdr" flexDirection="column" gap={1}>
+        <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+          <Text size="heading" weight="bold" color={TONE[signal.tone]}>● {signal.label}{timeText ? <Text color={c.muted} weight="regular"> · {timeText}</Text> : null}</Text>
+          {isTerminal ? null : (
+            <Box flexDirection="row" gap={1}>
+              <Button key="theme-light" plain onPress={() => setTheme($, 'light')}>
+                <Text bold={look === 'light'} color={look === 'light' ? c.ink : c.muted}>☀ Light</Text>
+              </Button>
+              <Button key="theme-dark" plain onPress={() => setTheme($, 'dark')}>
+                <Text bold={look === 'dark'} color={look === 'dark' ? c.ink : c.muted}>☾ Dark</Text>
+              </Button>
+            </Box>
+          )}
+        </Box>
+        {signal.note ? <Text color={c.muted} wrap="wrap">{signal.note}</Text> : null}
+        <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
+          <Text color={c.muted} size="footnote" wrap="truncate-end">{[model, p.title].filter(Boolean).join(' · ')}</Text>
           {Select ? (
-            <Select
-              key="effort"
-              label="Effort"
-              value={choice || 'session'}
-              options={[
-                { value: 'session', label: `Session setting${!choice && effortNow ? ` (${effortNow})` : ''}` },
-                ...LEVELS.map(level => ({ value: level, label: EFFORT_LABEL[level]! })),
-              ]}
-              onSelect={(value: string) => setEffort($, value === 'session' ? '' : (value as EffortLevel))}
-            />
+            <Box flexDirection="row" gap={1} alignItems="center">
+              <Text color={c.muted} size="footnote">Effort</Text>
+              <Select
+                key="effort"
+                value={choice || 'session'}
+                options={[
+                  { value: 'session', label: `Session setting${!choice && effortNow ? ` (${effortNow})` : ''}` },
+                  ...LEVELS.map(level => ({ value: level, label: EFFORT_LABEL[level]! })),
+                ]}
+                onSelect={(value: string) => setEffort($, value === 'session' ? '' : (value as EffortLevel))}
+              />
+            </Box>
           ) : effortNow ? (
-            <Text dimColor>· effort {effortNow}</Text>
+            <Text color={c.muted}>Effort {effortNow}</Text>
           ) : null}
         </Box>
-        {choice && effortNow && EFFORT_LABEL[choice] !== effortNow ? <Text dimColor>Effort {EFFORT_LABEL[choice]} applies from Claude's next step.</Text> : null}
+        {choice && effortNow && EFFORT_LABEL[choice] !== effortNow ? <Text color={c.muted}>Effort {EFFORT_LABEL[choice]} applies from Claude's next step.</Text> : null}
       </Box>
     )
 
@@ -803,28 +858,28 @@ export const register: Register = on => {
     const tab = a ? Math.min(a.tab ?? 0, Math.max(0, a.questions.length - 1)) : 0
     const q = a?.questions[tab]
     const answered = a ? a.questions.filter((_, i) => (a.picks[i] ?? []).length > 0).length : 0
-    const card = a && q ? (
-      <Box key="ask" flexDirection="column" borderStyle="round" borderColor={PAL.now} paddingX={1} paddingY={1} marginTop={1} gap={1}>
+    const askCard = a && q ? (
+      <Box key="ask" flexDirection="column" borderStyle="round" borderColor={c.accent} {...(c.surface ? { backgroundColor: c.surface } : {})} paddingX={1} paddingY={1} marginTop={1} gap={1}>
         <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
-          <Text bold color={PAL.now}>{isTabbed ? `${a.questions.length} questions` : q.header || (a.source === 'reply' ? 'Claude asked' : 'Question')}</Text>
-          <Button key={`${a.id}-skip`} plain dimColor onPress={() => update($, ask, () => null)}>Dismiss</Button>
+          <Text bold color={c.accent}>{isTabbed ? `${a.questions.length} questions` : q.header || (a.source === 'reply' ? 'Claude asked' : 'Question')}</Text>
+          <Button key={`${a.id}-skip`} plain onPress={() => update($, ask, () => null)}><Text color={c.muted}>Dismiss</Text></Button>
         </Box>
         {isTabbed ? (
           <Box flexDirection="row" flexWrap="wrap" gap={1}>
             {a.questions.map((qq, qi) => {
               const done = (a.picks[qi] ?? []).length > 0
               return (
-                <Button key={`${a.id}-tab-${qi}`} plain dimColor={qi !== tab} onPress={() => update($, ask, cur => (cur ? { ...cur, tab: qi } : cur))}>
-                  <Text color={done ? PAL.done : undefined}>{done ? '✓' : qi + 1} </Text>
-                  <Text bold={qi === tab} underline={qi === tab} color={qi === tab ? PAL.now : undefined}>{qq.header || `Question ${qi + 1}`}</Text>
+                <Button key={`${a.id}-tab-${qi}`} plain onPress={() => update($, ask, cur => (cur ? { ...cur, tab: qi } : cur))}>
+                  <Text color={done ? c.done : c.muted}>{done ? '✓' : qi + 1} </Text>
+                  <Text bold={qi === tab} underline={qi === tab} color={qi === tab ? c.accent : c.ink2}>{qq.header || `Question ${qi + 1}`}</Text>
                 </Button>
               )
             })}
           </Box>
         ) : null}
         <Box key={`${a.id}-q${tab}`} flexDirection="column" gap={1}>
-          <Text bold wrap="wrap">{q.question}</Text>
-          {q.multiSelect ? <Text dimColor>Pick one or more.</Text> : null}
+          <Text bold wrap="wrap" color={c.ink}>{q.question}</Text>
+          {q.multiSelect ? <Text color={c.muted}>Pick one or more.</Text> : null}
           {/* Short answers with nothing to explain (Yes, No) sit side by side; the rest stack with their descriptions. */}
           <Box flexDirection={q.options.every(o => !o.description && o.label.length <= 24) ? 'row' : 'column'} flexWrap="wrap" gap={1}>
           {q.options.map((o, oi) => {
@@ -853,15 +908,15 @@ export const register: Register = on => {
                       return
                     }
                     // A single pick moves on to the next question still open.
-                    const open = picks.findIndex(row => row.length === 0)
-                    await update($, ask, () => ({ ...fresh, tab: !q.multiSelect && open >= 0 ? open : tab }))
+                    const next = picks.findIndex(row => row.length === 0)
+                    await update($, ask, () => ({ ...fresh, tab: !q.multiSelect && next >= 0 ? next : tab }))
                   }}
                 >
                   {q.multiSelect ? (picked ? '☑ ' : '☐ ') : picked ? '● ' : '○ '}
                   {o.label.replace(/\s*\(recommended\)\s*$/i, '')}
-                  {isRecommended ? <Text color={PAL.now}> · Recommended</Text> : null}
+                  {isRecommended ? <Text color={c.accent}> · Recommended</Text> : null}
                 </Button>
-                {o.description ? <Box paddingLeft={2}><Text dimColor wrap="wrap">{o.description}</Text></Box> : null}
+                {o.description ? <Box paddingLeft={2}><Text color={c.muted} wrap="wrap">{o.description}</Text></Box> : null}
               </Box>
             )
           })}
@@ -869,14 +924,14 @@ export const register: Register = on => {
         </Box>
         {a.source === 'question' && (isTabbed || q.multiSelect) ? (
           <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
-            <Text dimColor>{isTabbed ? `${answered} of ${a.questions.length} answered` : ''}</Text>
+            <Text color={c.muted}>{isTabbed ? `${answered} of ${a.questions.length} answered` : ''}</Text>
             <Button key={`${a.id}-send`} variant="primary" onPress={async () => {
               const cur = await read($, ask)
               if (!cur) return
-              const open = cur.questions.findIndex((_, i) => (cur.picks[i] ?? []).length === 0)
-              if (open >= 0 && cur.questions.length > 1) {
-                await update($, ask, () => ({ ...cur, tab: open }))
-                $.ui.toast(`Answer "${cur.questions[open]?.header || `question ${open + 1}`}" first, or type your own reply.`)
+              const unanswered = cur.questions.findIndex((_, i) => (cur.picks[i] ?? []).length === 0)
+              if (unanswered >= 0 && cur.questions.length > 1) {
+                await update($, ask, () => ({ ...cur, tab: unanswered }))
+                $.ui.toast(`Answer "${cur.questions[unanswered]?.header || `question ${unanswered + 1}`}" first, or type your own reply.`)
                 return
               }
               await send($, answerText(cur))
@@ -895,13 +950,13 @@ export const register: Register = on => {
           />
         ) : null}
         <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-          <Button key={`${a.id}-later`} plain dimColor onPress={() => decideLater($)}>Decide later · save checkpoint</Button>
+          <Button key={`${a.id}-later`} plain onPress={() => decideLater($)}><Text color={c.muted}>Decide later · save checkpoint</Text></Button>
           {a.source === 'question' ? (
-            <Button key="mode" plain dimColor onPress={async () => {
+            <Button key="mode" plain onPress={async () => {
               const nextMode = (await read($, mode)) === 'panel' ? 'dialog' : 'panel'
               await update($, mode, () => nextMode)
               await $.store.set('mode', nextMode).catch(() => undefined)
-            }}>{m === 'panel' ? 'Ask me in the usual dialog instead' : 'Ask me here in the panel'}</Button>
+            }}><Text color={c.muted}>{m === 'panel' ? 'Ask me in the usual dialog instead' : 'Ask me here in the panel'}</Text></Button>
           ) : null}
         </Box>
       </Box>
@@ -910,16 +965,16 @@ export const register: Register = on => {
     // 3. Finished: a copyable recap leads. Three kinds: summary, what changed, what's next.
     const otherKinds = SUMMARY_KINDS.filter(k => k !== sum?.kind)
     const summaryCard = sum && state !== 'ask' ? (
-      <Box key="summary" flexDirection="column" borderStyle="round" borderColor={PAL.done} paddingX={1} marginTop={1}>
+      <Box key="summary" flexDirection="column" borderStyle="round" borderColor={c.done} paddingX={1} paddingY={1} marginTop={1} gap={1}>
         {sum.status === 'offer' ? (
-          <Box flexDirection="column">
-            <Text bold>Want a recap?</Text>
-            <Text dimColor>Pick one. You can copy it anywhere.</Text>
+          <Box flexDirection="column" gap={1}>
+            <Text bold color={c.ink}>Want a recap?</Text>
+            <Text color={c.muted}>Pick one. You can copy it anywhere.</Text>
             {lastCp ? (
               <Box flexDirection="row" gap={1} flexWrap="wrap">
-                <Text dimColor>Covers: {scopeNow === 'since' ? `the work since the checkpoint at ${clock(lastCp.at).slice(0, 5)}` : 'the whole session'}</Text>
-                <Button key="sum-scope" plain dimColor onPress={() => update($, recapScope, v => (v === 'since' ? 'all' : 'since'))}>
-                  {scopeNow === 'since' ? 'Use the whole session' : 'Use since the last checkpoint'}
+                <Text color={c.muted}>Covers: {scopeNow === 'since' ? `the work since the checkpoint at ${clock(lastCp.at).slice(0, 5)}` : 'the whole session'}</Text>
+                <Button key="sum-scope" plain onPress={() => update($, recapScope, v => (v === 'since' ? 'all' : 'since'))}>
+                  <Text color={c.accent}>{scopeNow === 'since' ? 'Use the whole session' : 'Use since the last checkpoint'}</Text>
                 </Button>
               </Box>
             ) : null}
@@ -931,12 +986,12 @@ export const register: Register = on => {
             </Box>
           </Box>
         ) : null}
-        {sum.status === 'loading' ? <Text color={PAL.now}>Writing: {SUMMARY_LABEL[sum.kind]}…</Text> : null}
+        {sum.status === 'loading' ? <Text color={c.accent}>Writing: {SUMMARY_LABEL[sum.kind]}…</Text> : null}
         {sum.status === 'ready' || sum.status === 'error' ? (
-          <Box flexDirection="column">
-            <Text bold>{SUMMARY_LABEL[sum.kind]}</Text>
-            {lastCp ? <Text dimColor>{sum.scope === 'since' ? `Covers the work since the checkpoint at ${clock(lastCp.at).slice(0, 5)}.` : 'Covers the whole session.'}</Text> : null}
-            {sum.status === 'ready' ? <Markdown key="sum-text" text={sum.text} /> : <Text color={PAL.failed}>{sum.text}</Text>}
+          <Box flexDirection="column" gap={1}>
+            <Text bold color={c.ink}>{SUMMARY_LABEL[sum.kind]}</Text>
+            {lastCp ? <Text color={c.muted}>{sum.scope === 'since' ? `Covers the work since the checkpoint at ${clock(lastCp.at).slice(0, 5)}.` : 'Covers the whole session.'}</Text> : null}
+            {sum.status === 'ready' ? prose('sum-text', sum.text) : <Text color={c.failed}>{sum.text}</Text>}
             <Box flexDirection="row" gap={1} flexWrap="wrap">
               {sum.status === 'ready' ? <Button key="sum-copy" variant="primary" onPress={press => copySummary($, press.surface)}>Copy</Button> : null}
               {sum.status === 'ready' ? <Button key="sum-full" dimColor={isVscode} onPress={() => openRecap($)}>Open full view</Button> : null}
@@ -952,210 +1007,232 @@ export const register: Register = on => {
       </Box>
     ) : null
 
-    // 4. Progress: a rail with one segment per step (hover a segment for its name), then Now / Next / time left.
-    const rail = (key: string, steps: Step[]) => {
-      const drawn = Svg ? railSvg(steps, BAR_WIDTH) : undefined
-      if (Svg && drawn) {
-        return (
-          <Box key={`${key}-drawing`} flexDirection="column">
-            <Svg source={drawn.source} alt={drawn.alt} height={drawn.height} isInteractive />
-          </Box>
-        )
-      }
-      return (
-        <Text key={`${key}-rail`}>
-          {steps.slice(0, 60).map((s, i) => (
-            <Text key={`${key}r${i}`} color={s.status === 'done' ? PAL.done : s.status === 'active' ? PAL.now : s.status === 'failed' ? PAL.failed : PAL.waiting}>
-              {s.status === 'done' ? '█' : s.status === 'active' ? '●' : s.status === 'failed' ? '✕' : '░'}
-            </Text>
-          ))}
-        </Text>
-      )
-    }
-    const progress = (key: string, title: string, steps: Step[], compact: boolean, note?: string) => {
-      if (steps.length === 0) return null
-      const done = steps.filter(s => s.status === 'done').length
-      const activeAt = steps.findIndex(s => s.status === 'active')
-      const active = steps[activeAt]
-      const nextStep = steps.find((s, i) => i > activeAt && s.status === 'pending')
-      const left = timeLeft(steps, now)
-      const toGo = steps.length - done
-      return (
-        <Box key={key} flexDirection="column" marginTop={1}>
-          <Box flexDirection="row" justifyContent="space-between" gap={1}>
-            <Text bold>{title}</Text>
-            <Text dimColor>{done} of {steps.length} steps{toGo ? ` · ${toGo} left` : ' · all done'}</Text>
-          </Box>
-          {note ? <Text dimColor>{note}</Text> : null}
-          {rail(key, steps)}
-          {active ? (
-            <Text wrap="truncate-end">
-              <Text color={PAL.now} bold>Now: </Text>
-              {active.title}
-              {!compact && active.startedAt !== undefined ? <Text color={PAL.now}> · {duration(now - active.startedAt)}</Text> : null}
-            </Text>
-          ) : null}
-          {!compact && nextStep ? <Text dimColor wrap="truncate-end">Next: {nextStep.title}</Text> : null}
-          {!compact && left !== undefined ? <Text dimColor>About {duration(left)} left</Text> : null}
+    // 4. The turn's dial: its time in the middle, the arc for the share of the estimate used, and Pause, Stop and Save under it.
+    const turnMs = t.startedAt ? (t.isRunning ? now : t.endedAt || now) - t.startedAt : 0
+    const left = state === 'working' ? timeLeft(p.steps, now) : undefined
+    const doneSteps = p.steps.filter(s => s.status === 'done').length
+    const activeAt = p.steps.findIndex(s => s.status === 'active')
+    const active = p.steps[activeAt]
+    const nextStep = p.steps.find((s, i) => i > activeAt && s.status === 'pending')
+    const fraction = state === 'finished' ? 1 : left !== undefined ? turnMs / Math.max(1, turnMs + left) : p.steps.length ? doneSteps / p.steps.length : 0
+    const dialNote = state === 'finished' ? (bgRunning ? 'waiting on background work' : 'finished') : left !== undefined ? `about ${duration(left)} left` : 'this turn'
+    const stepNote = p.steps.length ? (active ? `Step ${activeAt + 1} of ${p.steps.length}` : `${doneSteps} of ${p.steps.length} steps`) : ''
+    const dialSize = Math.min(210, Math.max(150, Math.round(px * 0.55)))
+    const drawnDial = Svg
+      ? dialSvg({ fraction, time: clockTime(turnMs), note: dialNote, color: state === 'finished' ? c.done : c.accent, track: c.track, tick: c.tick, ink: c.ink, muted: c.muted, knob: c.surface ?? '#FFFFFF' }, dialSize)
+      : undefined
+    const dial = t.startedAt && state !== 'ask' ? (
+      <Box key="dial" flexDirection="column" alignItems="center" gap={1} marginTop={1} paddingX={1} paddingY={1} {...card}>
+        <Box flexDirection="row" justifyContent="space-between" width="100%" gap={1}>
+          <Text bold color={c.ink}>{state === 'finished' ? 'Last turn' : 'This turn'}</Text>
+          <Text color={c.muted}>{stepNote}</Text>
         </Box>
-      )
-    }
+        {Svg && drawnDial ? (
+          <Svg key="dial-drawing" source={drawnDial.source} alt={drawnDial.alt} width={dialSize} height={dialSize} />
+        ) : (
+          <Box flexDirection="column" alignItems="center">
+            <Text size="title" weight="bold" tabular color={c.ink}>{clockTime(turnMs)}</Text>
+            <Text color={c.muted}>{dialNote}</Text>
+          </Box>
+        )}
+        <Box flexDirection="row" gap={1} justifyContent="center" flexWrap="wrap">
+          {t.isRunning ? <Button key="dial-pause" dimColor={isVscode} onPress={() => saveCheckpoint($, true)}>Pause</Button> : null}
+          {t.isRunning ? <Button key="dial-stop" variant="primary" onPress={stop}>Stop</Button> : null}
+          <Button key="dial-save" dimColor={isVscode} onPress={() => saveCheckpoint($, false)}>{t.isRunning ? 'Save' : 'Save checkpoint'}</Button>
+        </Box>
+      </Box>
+    ) : null
 
-    // At a glance: a ring of the steps done, the share in big type, time so far and left, then what runs now.
-    const ring = (steps: Step[], title: string) => {
-      if (steps.length === 0) return null
-      const done = steps.filter(s => s.status === 'done').length
-      const activeAt = steps.findIndex(s => s.status === 'active')
-      const active = steps[activeAt]
-      const nextStep = steps.find((s, i) => i > activeAt && s.status === 'pending')
-      const left = state === 'working' ? timeLeft(steps, now) : undefined
-      const began = Math.min(...steps.map(s => s.startedAt ?? Infinity), t.startedAt || Infinity)
-      const spent = Number.isFinite(began) ? (t.isRunning ? now : t.endedAt || now) - began : 0
-      const changed = places(list).filter(pl => pl.creates + pl.edits > 0).length
-      const size = Math.min(96, Math.round(px * 0.3))
-      const drawn = Svg ? ringSvg(steps, size) : undefined
-      return (
-        <Box key="ring" flexDirection="column" marginTop={1} gap={1}>
-          <Text dimColor wrap="truncate-end">{title}</Text>
-          <Box flexDirection="row" alignItems="center" gap={2}>
-            {Svg && drawn ? <Svg key="ring-drawing" source={drawn.source} alt={drawn.alt} width={size} height={size} /> : null}
-            <Box flexDirection="column">
-              <Text size="title" weight="semibold" tabular>{Math.round((done / steps.length) * 100)}%</Text>
-              {Svg ? null : <Text color={PAL.done}>{railText(steps)}</Text>}
-              <Text dimColor>{done} of {steps.length} steps{left !== undefined ? ` · about ${duration(left)} left` : ''}</Text>
-              <Text dimColor tabular>{duration(spent)} so far{changed ? ` · ${changed} file${changed === 1 ? '' : 's'} changed` : ''}</Text>
-            </Box>
-          </Box>
-          {active ? (
-            <Text weight="semibold" wrap="wrap">
-              <Text color={PAL.now}>Now: </Text>
-              {active.title}
-              {active.startedAt !== undefined ? <Text color={PAL.now} tabular> · {duration(now - active.startedAt)}</Text> : null}
-            </Text>
-          ) : null}
-          {nextStep ? <Text dimColor wrap="truncate-end">Then: {nextStep.title}</Text> : null}
-        </Box>
-      )
-    }
-
-    // Claude in its own words: the latest line, with what it does this second above it, and the two before.
-    const thisTurn = lines.filter(n => n.at >= t.startedAt)
-    const latest = thisTurn.at(-1)
-    const narrationBlock = (
-      <Box key="narration" flexDirection="column" marginTop={1}>
-        <Box flexDirection="column" borderStyle="round" borderColor={PAL.waiting} paddingX={1}>
-          <Text color={PAL.now}>● {nowDoing(list)}</Text>
-          {latest ? <Text wrap="wrap">{latest.text}</Text> : null}
-        </Box>
-        {thisTurn.slice(-3, -1).reverse().map(n => (
-          <Text key={`said-${n.at}`} dimColor wrap="wrap">{clock(n.at).slice(0, 5)}  {n.text}</Text>
-        ))}
+    // 5. Two tiles: how long the session has run, and when the next automatic checkpoint is due.
+    const startDay = began && new Date(began).toDateString() !== new Date(now).toDateString() ? `${new Date(began).toDateString().slice(4, 10)}, ` : ''
+    const lastAt = Math.max(loadedAt, autoTriedAt, ...cps.map(cp => cp.at))
+    const workAt = list.reduce((max, call) => (call.isHelper ? max : Math.max(max, call.startedAt)), 0)
+    const dueIn = every > 0 && workAt > lastAt ? Math.max(0, lastAt + every - now) : undefined
+    const nextSave = every <= 0 ? 'Off' : dueIn === undefined ? 'after new work' : dueIn < 60_000 ? 'in under 1m' : `in ${Math.ceil(dueIn / 60_000)}m`
+    const tile = (key: string, label: string, big: string, small: string, bigColor: string) => (
+      <Box key={key} flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} paddingX={1} {...outline}>
+        <Text color={c.muted} size="footnote">{label}</Text>
+        <Text size="heading" weight="bold" tabular color={bigColor}>{big}</Text>
+        <Text color={c.muted} size="footnote" wrap="truncate-end">{small}</Text>
+      </Box>
+    )
+    const tiles = (
+      <Box key="tiles" flexDirection="row" gap={1} marginTop={1}>
+        {began ? tile('tile-session', 'Session', sessionLength(now - began), `since ${startDay}${clock(began).slice(0, 5)}`, c.ink) : null}
+        {tile('tile-autosave', 'Next auto-save', nextSave, every > 0 ? `${everyLabel(every).toLowerCase()} · ${cps.length} saved` : 'Turn it on in Checkpoints', every > 0 && dueIn !== undefined ? c.accent : c.ink)}
       </Box>
     )
 
-    // Work in the background: each task's timer, and its latest action as proof it still works.
+    // 6. Now: the step bar, the step running and its time, Claude's latest words, and what comes next.
+    const segs = Svg && p.steps.length ? segmentsSvg(p.steps, { done: c.done, now: c.accent, waiting: c.track, failed: c.failed }, BAR_WIDTH) : undefined
+    const latest = lines.filter(n => n.at >= t.startedAt).at(-1)
+    const nowBlock = state === 'working' ? (
+      <Box key="now" flexDirection="column" gap={1} marginTop={1} paddingX={1} paddingY={1} {...card}>
+        {Svg && segs ? (
+          <Svg key="now-steps" source={segs.source} alt={segs.alt} height={segs.height} isInteractive />
+        ) : p.steps.length ? (
+          <Text color={c.done}>{railText(p.steps)}</Text>
+        ) : null}
+        {active ? (
+          <Box flexDirection="row" justifyContent="space-between" gap={1}>
+            <Text bold wrap="wrap" color={c.ink}>{active.title}</Text>
+            {active.startedAt !== undefined ? <Text bold tabular color={c.accent}>{clockTime(now - active.startedAt)}</Text> : null}
+          </Box>
+        ) : null}
+        {latest ? <Text wrap="wrap" color={c.ink2}>{latest.text}</Text> : null}
+        <Text wrap="wrap" color={c.muted}>{nowDoing(list)}{nextStep ? ` · then: ${nextStep.title}` : ''}</Text>
+      </Box>
+    ) : null
+
+    // 7. Work in the background: a stopwatch ring for each task, its timer, and its latest action as proof it still works.
     const bgLine = (b: BgTask) => {
       if (b.status !== 'running') return `${b.status === 'done' ? 'Finished' : b.status === 'failed' ? 'Failed' : 'Stopped'}${b.actions ? ` · ${b.actions} actions` : ''}`
       if (b.lastAt === undefined) return b.kind === 'shell' ? `Started ${clock(b.startedAt).slice(0, 5)}` : 'Starting'
       return `${b.lastAction} · ${duration(now - b.lastAt)} ago · ${b.actions} actions`
     }
     const bgBlock = bg.length === 0 ? null : (
-      <Box key="bg" flexDirection="column" marginTop={1}>
-        <Text bold>{bgRunning ? `Running in the background · ${bgRunning}` : 'Background work'}</Text>
+      <Box key="bg" flexDirection="column" gap={1} marginTop={1} paddingX={1} paddingY={1} {...outline}>
+        <Box flexDirection="row" justifyContent="space-between" gap={1}>
+          <Text bold color={c.ink}>{bgRunning ? 'Running in the background' : 'Background work'}</Text>
+          <Text color={c.muted}><Text color={bgRunning ? c.accent : c.muted}>● </Text>{bgRunning ? `${bgRunning} running` : `${bg.length} done`}</Text>
+        </Box>
         {[...bg].reverse().map(b => {
           const isRunning = b.status === 'running'
           const isQuiet = isRunning && quietFor(b, now) > QUIET_AFTER
-          const color = isRunning ? PAL.now : b.status === 'done' ? PAL.done : b.status === 'failed' ? PAL.failed : PAL.waiting
+          const color = isRunning ? (isQuiet ? c.quiet : b.kind === 'shell' ? c.done : c.accent) : b.status === 'done' ? c.done : b.status === 'failed' ? c.failed : c.muted
+          const ring = Svg && isRunning ? miniRingSvg(((now - b.startedAt) % 60_000) / 60_000, color, c.track, 26) : undefined
           return (
-            <Box key={`bg-${b.id}`} flexDirection="column">
-              <Box flexDirection="row" justifyContent="space-between" gap={1}>
-                <Text wrap="truncate-end" bold={isRunning} dimColor={!isRunning}>
-                  <Text color={color}>{isRunning ? '●' : b.status === 'done' ? '✓' : b.status === 'failed' ? '✕' : '■'} </Text>
-                  {b.kind === 'shell' ? 'Command: ' : ''}{b.title}
-                </Text>
-                <Text dimColor tabular>{duration((b.endedAt ?? now) - b.startedAt)}</Text>
+            <Box key={`bg-${b.id}`} flexDirection="row" gap={1} alignItems="center">
+              {Svg && ring ? (
+                <Svg key={`bg-ring-${b.id}`} source={ring.source} alt="" width={26} height={26} />
+              ) : (
+                <Text color={color}>{isRunning ? '●' : b.status === 'done' ? '✓' : b.status === 'failed' ? '✕' : '■'}</Text>
+              )}
+              <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
+                <Text wrap="truncate-end" bold={isRunning} color={isRunning ? c.ink : c.muted}>{b.kind === 'shell' ? 'Command: ' : ''}{b.title}</Text>
+                <Text wrap="truncate-end" color={isQuiet ? c.quiet : c.muted}>{bgLine(b)}{isQuiet ? ' · quiet for a while' : ''}</Text>
               </Box>
-              <Text wrap="truncate-end" dimColor={!isQuiet} color={isQuiet ? TONE.slow : undefined}>
-                {'  '}{bgLine(b)}{isQuiet ? ' · quiet for a while' : ''}
-              </Text>
+              <Text bold tabular color={isRunning ? c.ink : c.muted}>{clockTime((b.endedAt ?? now) - b.startedAt)}</Text>
             </Box>
           )
         })}
       </Box>
     )
 
-    // Where the time went, step by step: done steps with how long they took, the one now with its running time.
-    const stepsList = (steps: Step[]) => {
+    // A script's progress file, when one is followed: its rail, the step now and the next.
+    const rail = (key: string, steps: Step[]) => {
+      const drawn = Svg ? railSvg(steps, BAR_WIDTH) : undefined
+      if (Svg && drawn) return <Svg key={`${key}-drawing`} source={drawn.source} alt={drawn.alt} height={drawn.height} isInteractive />
+      return <Text key={`${key}-rail`} color={c.done}>{railText(steps)}</Text>
+    }
+    const progress = (key: string, title: string, steps: Step[], compact: boolean, note?: string) => {
       if (steps.length === 0) return null
-      const activeAt = steps.findIndex(s => s.status === 'active')
-      const from = Math.max(0, Math.min((activeAt < 0 ? steps.length : activeAt) - 4, steps.length - 10))
+      const done = steps.filter(s => s.status === 'done').length
+      const at = steps.findIndex(s => s.status === 'active')
+      const running = steps[at]
+      const then = steps.find((s, i) => i > at && s.status === 'pending')
+      const toGo = steps.length - done
       return (
-        <Box key="steps" flexDirection="column" marginTop={1}>
-          <Text bold>Steps</Text>
-          {from > 0 ? <Text dimColor>{from} earlier steps done</Text> : null}
-          {steps.slice(from, from + 10).map((s, i) => {
-            const took =
-              s.status === 'done' && s.startedAt !== undefined && s.doneAt !== undefined ? duration(s.doneAt - s.startedAt)
-                : s.status === 'active' && s.startedAt !== undefined ? duration(now - s.startedAt)
-                  : ''
-            const color = s.status === 'done' ? PAL.done : s.status === 'active' ? PAL.now : s.status === 'failed' ? PAL.failed : undefined
-            return (
-              <Box key={`step-${from + i}`} flexDirection="row" justifyContent="space-between" gap={1}>
-                <Text wrap="truncate-end" dimColor={s.status === 'pending'} bold={s.status === 'active'}>
-                  <Text color={color}>{s.status === 'done' ? '✓' : s.status === 'active' ? '●' : s.status === 'failed' ? '✕' : '○'} </Text>
-                  {s.title}
-                </Text>
-                <Text dimColor tabular>{took}</Text>
-              </Box>
-            )
-          })}
-          {steps.length > from + 10 ? <Text dimColor>and {steps.length - from - 10} more</Text> : null}
+        <Box key={key} flexDirection="column" marginTop={1} paddingX={1} paddingY={1} {...outline}>
+          <Box flexDirection="row" justifyContent="space-between" gap={1}>
+            <Text bold color={c.ink}>{title}</Text>
+            <Text color={c.muted}>{done} of {steps.length} steps{toGo ? ` · ${toGo} left` : ' · all done'}</Text>
+          </Box>
+          {note ? <Text color={c.muted}>{note}</Text> : null}
+          {rail(key, steps)}
+          {running ? (
+            <Text wrap="truncate-end" color={c.ink}>
+              <Text color={c.accent} bold>Now: </Text>
+              {running.title}
+              {!compact && running.startedAt !== undefined ? <Text color={c.accent}> · {duration(now - running.startedAt)}</Text> : null}
+            </Text>
+          ) : null}
+          {!compact && then ? <Text color={c.muted} wrap="truncate-end">Next: {then.title}</Text> : null}
+        </Box>
+      )
+    }
+    const script = f.path !== '' ? progress('feed', `Script: ${f.title || f.path}`, f.steps, state !== 'working', f.error ? `Following ${f.path} (${f.error})` : undefined) : null
+
+    // 8. The folding sections: one line each with its summary; open one for the detail.
+    const rule = Svg ? hairlineSvg(c.line) : undefined
+    const section = (id: string, title: string, note: string, body: () => JSX.Element | null) => {
+      const isOpen = opened.includes(id)
+      return (
+        <Box key={`sec-${id}`} flexDirection="column">
+          <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+            <Button key={`sec-${id}-toggle`} plain onPress={() => toggleSection($, id)}><Text bold color={c.ink}>{title}</Text></Button>
+            <Button key={`sec-${id}-note`} plain onPress={() => toggleSection($, id)}><Text color={c.muted}>{note} {isOpen ? '▾' : '▸'}</Text></Button>
+          </Box>
+          {isOpen ? <Box flexDirection="column" gap={1} paddingY={1}>{body()}</Box> : null}
+          {Svg && rule ? <Svg key={`sec-${id}-rule`} source={rule.source} alt="" height={rule.height} /> : null}
         </Box>
       )
     }
 
-    // 5. Activity: where the time went, then the latest actions; click one for everything about it.
+    // Steps: each with the time it took, the one now with its running time.
+    const stepsBody = () => {
+      const steps = p.steps
+      const from = Math.max(0, Math.min((activeAt < 0 ? steps.length : activeAt) - 4, steps.length - 10))
+      return (
+        <Box key="steps" flexDirection="column">
+          {from > 0 ? <Text color={c.muted}>{from} earlier steps done</Text> : null}
+          {steps.slice(from, from + 10).map((s, i) => {
+            const took =
+              s.status === 'done' && s.startedAt !== undefined && s.doneAt !== undefined ? clockTime(s.doneAt - s.startedAt)
+                : s.status === 'active' && s.startedAt !== undefined ? clockTime(now - s.startedAt)
+                  : ''
+            const color = s.status === 'done' ? c.done : s.status === 'active' ? c.accent : s.status === 'failed' ? c.failed : c.muted
+            return (
+              <Box key={`step-${from + i}`} flexDirection="row" justifyContent="space-between" gap={1}>
+                <Text wrap="truncate-end" bold={s.status === 'active'} color={s.status === 'pending' ? c.muted : c.ink}>
+                  <Text color={color}>{s.status === 'done' ? '✓' : s.status === 'active' ? '●' : s.status === 'failed' ? '✕' : '○'} </Text>
+                  {s.title}
+                </Text>
+                <Text tabular bold={s.status === 'active'} color={s.status === 'active' ? c.accent : c.muted}>{took}</Text>
+              </Box>
+            )
+          })}
+          {steps.length > from + 10 ? <Text color={c.muted}>and {steps.length - from - 10} more</Text> : null}
+        </Box>
+      )
+    }
+
+    // Activity: where the time went, then the latest actions; click one for everything about it.
     const shares = activityShares(list)
-    const total = shares.reduce((sum, x) => sum + x.ms, 0)
+    const total = shares.reduce((sumMs, x) => sumMs + x.ms, 0)
     const drawnActivity = Svg && shares.length ? activitySvg(shares, BAR_WIDTH) : undefined
     const rowsShown = expanded ? 20 : 4
     const recent = list.slice(-rowsShown).reverse()
     const barWidth = Math.max(10, Math.min(40, cols - 4))
-    const detail = (c: Call) => (
-      <Box key={`detail-${c.id}`} flexDirection="column" borderStyle="round" borderColor={PAL.waiting} paddingX={1}>
-        <Text bold>{c.isHelper ? 'Helper: ' : ''}{c.label}</Text>
-        <Text dimColor>
-          {c.endedAt === undefined ? 'Still running' : c.isError ? 'Failed' : 'Finished'} · started {clock(c.startedAt)} · {duration((c.endedAt ?? now) - c.startedAt)}
+    const detail = (call: Call) => (
+      <Box key={`detail-${call.id}`} flexDirection="column" paddingX={1} {...outline}>
+        <Text bold color={c.ink}>{call.isHelper ? 'Helper: ' : ''}{call.label}</Text>
+        <Text color={c.muted}>
+          {call.endedAt === undefined ? 'Still running' : call.isError ? 'Failed' : 'Finished'} · started {clock(call.startedAt)} · {duration((call.endedAt ?? now) - call.startedAt)}
         </Text>
-        {c.input ? <Text dimColor>What it was given</Text> : null}
-        {c.input ? <Code source={c.input} language={c.kind === 'run' ? 'bash' : 'json'} /> : null}
-        {c.output ? <Text dimColor>{c.isError ? 'What went wrong' : 'What came back (start)'}</Text> : null}
-        {c.output ? <Code source={c.output} language="text" /> : null}
-        {!c.output && c.endedAt === undefined ? <Text dimColor>Its result will show here when it finishes.</Text> : null}
+        {call.input ? <Text color={c.muted}>What it was given</Text> : null}
+        {call.input ? <Code source={call.input} language={call.kind === 'run' ? 'bash' : 'json'} /> : null}
+        {call.output ? <Text color={c.muted}>{call.isError ? 'What went wrong' : 'What came back (start)'}</Text> : null}
+        {call.output ? <Code source={call.output} language="text" /> : null}
+        {!call.output && call.endedAt === undefined ? <Text color={c.muted}>Its result will show here when it finishes.</Text> : null}
       </Box>
     )
     // One clickable line per action; click it to open its detail beneath. `scope` keeps keys apart where a call shows twice.
-    const actionRow = (c: Call, scope: string) => (
-      <Box key={`${scope}-row-${c.id}`} flexDirection="column">
-        <Button key={`${scope}-call-${c.id}`} plain dimColor={c.endedAt !== undefined && !c.isError} onPress={() => update($, openCall, cur => (cur === c.id ? '' : c.id))}>
-          <Text color={c.endedAt === undefined ? PAL.now : c.isError ? PAL.failed : PAL.done}>{c.endedAt === undefined ? '●' : c.isError ? '✕' : '✓'} </Text>
-          {c.isHelper ? 'Helper: ' : ''}{c.label}
-          {c.detail ? <Text dimColor> · {clip(c.detail, Math.max(10, cols - c.label.length - 18))}</Text> : null}
-          <Text dimColor> {duration((c.endedAt ?? now) - c.startedAt)} {open === c.id ? '▾' : '▸'}</Text>
+    const actionRow = (call: Call, scope: string) => (
+      <Box key={`${scope}-row-${call.id}`} flexDirection="column">
+        <Button key={`${scope}-call-${call.id}`} plain onPress={() => update($, openCall, cur => (cur === call.id ? '' : call.id))}>
+          <Text color={call.endedAt === undefined ? c.accent : call.isError ? c.failed : c.done}>{call.endedAt === undefined ? '●' : call.isError ? '✕' : '✓'} </Text>
+          <Text color={call.endedAt === undefined || call.isError ? c.ink : c.ink2}>{call.isHelper ? 'Helper: ' : ''}{call.label}</Text>
+          {call.detail ? <Text color={c.muted}> · {clip(call.detail, Math.max(10, cols - call.label.length - 18))}</Text> : null}
+          <Text color={c.muted}> {duration((call.endedAt ?? now) - call.startedAt)} {open === call.id ? '▾' : '▸'}</Text>
         </Button>
-        {open === c.id ? detail(c) : null}
+        {open === call.id ? detail(call) : null}
       </Box>
     )
-    const activity = (
-      <Box key="activity" flexDirection="column" marginTop={1}>
-        <Box flexDirection="row" justifyContent="space-between" gap={1}>
-          <Text bold>Activity</Text>
-          <Text dimColor>last 10 min</Text>
-        </Box>
+    const activityBody = () => (
+      <Box key="activity" flexDirection="column" gap={1}>
         {drawnActivity && Svg ? (
-          <Box key="activity-drawing" flexDirection="column">
-            <Svg source={drawnActivity.source} alt={drawnActivity.alt} height={drawnActivity.height} isInteractive />
-          </Box>
+          <Svg key="activity-drawing" source={drawnActivity.source} alt={drawnActivity.alt} height={drawnActivity.height} isInteractive />
         ) : shares.length ? (
           <Text>
             {shares.map(x => (
@@ -1167,17 +1244,17 @@ export const register: Register = on => {
           <Text wrap="wrap">
             {shares.map((x, i) => (
               <Text key={`legend-${x.kind}`}>
-                {i ? '  ' : ''}<Text color={x.color}>■</Text> <Text dimColor>{x.label} {Math.round((x.ms / total) * 100)}%</Text>
+                {i ? '  ' : ''}<Text color={x.color}>■</Text> <Text color={c.muted}>{x.label} {Math.round((x.ms / total) * 100)}%</Text>
               </Text>
             ))}
           </Text>
         ) : (
-          <Text dimColor>Nothing yet. Actions show here as Claude works.</Text>
+          <Text color={c.muted}>Nothing yet. Actions show here as Claude works.</Text>
         )}
-        {recent.map(c => actionRow(c, 'recent'))}
+        <Box flexDirection="column">{recent.map(call => actionRow(call, 'recent'))}</Box>
         {list.length > 4 ? (
-          <Button key="more" plain dimColor onPress={() => update($, showDetails, v => !v)}>
-            {expanded ? 'Show fewer actions' : `Show all recent actions (${Math.min(list.length, 20)})`}
+          <Button key="more" plain onPress={() => update($, showDetails, v => !v)}>
+            <Text color={c.accent}>{expanded ? 'Show fewer actions' : `Show all recent actions (${Math.min(list.length, 20)})`}</Text>
           </Button>
         ) : null}
       </Box>
@@ -1186,66 +1263,61 @@ export const register: Register = on => {
     // Where Claude worked: the files it created, edited or read. Click a file for every action on it.
     const where = places(list)
     const changedCount = where.filter(pl => pl.creates + pl.edits > 0).length
-    const opened = where.find(pl => pl.path === fileOpen)
-    const placeColor = (pl: { creates: number; edits: number }) => (pl.creates ? PAL.done : pl.edits ? '#C9A24A' : '#6E7F8D')
-    const whereBlock = where.length ? (
-      <Box key="where" flexDirection="column" marginTop={1}>
-        <Box flexDirection="row" justifyContent="space-between" gap={1}>
-          <Text bold>Where Claude worked</Text>
-          <Text dimColor>{changedCount} changed · {where.length - changedCount} read</Text>
-        </Box>
+    const fileShown = where.find(pl => pl.path === fileOpen)
+    const placeColor = (pl: { creates: number; edits: number }) => (pl.creates ? c.done : pl.edits ? c.accent : c.muted)
+    const whereBody = () => (
+      <Box key="where" flexDirection="column" gap={1}>
         <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
           {where.slice(0, 10).map(pl => (
-            <Button key={`place-${pl.path}`} plain dimColor onPress={() => update($, openFile, cur => (cur === pl.path ? '' : pl.path))}>
-              <Text color={placeColor(pl)}>{pl.creates ? '+' : pl.edits ? '✎' : '○'}</Text> {pl.name}
-              {pl.creates + pl.edits > 1 ? <Text dimColor> ×{pl.creates + pl.edits}</Text> : null}
+            <Button key={`place-${pl.path}`} plain onPress={() => update($, openFile, cur => (cur === pl.path ? '' : pl.path))}>
+              <Text color={placeColor(pl)}>{pl.creates ? '+' : pl.edits ? '✎' : '○'}</Text>
+              <Text color={c.ink2}> {pl.name}</Text>
+              {pl.creates + pl.edits > 1 ? <Text color={c.muted}> ×{pl.creates + pl.edits}</Text> : null}
             </Button>
           ))}
         </Box>
-        {where.length > 10 ? <Text dimColor>and {where.length - 10} more</Text> : null}
-        <Text dimColor size="footnote">+ created  ✎ edited  ○ read</Text>
-        {opened ? (
-          <Box key="file-detail" flexDirection="column" borderStyle="round" borderColor={placeColor(opened)} paddingX={1}>
-            <Text bold>{opened.name}</Text>
-            <Text dimColor wrap="wrap">{opened.path}</Text>
-            <Text dimColor>
-              {[opened.creates ? `created ${opened.creates}×` : '', opened.edits ? `edited ${opened.edits}×` : '', opened.reads ? `read ${opened.reads}×` : ''].filter(Boolean).join(' · ')}
+        {where.length > 10 ? <Text color={c.muted}>and {where.length - 10} more</Text> : null}
+        <Text color={c.muted} size="footnote">+ created  ✎ edited  ○ read</Text>
+        {fileShown ? (
+          <Box key="file-detail" flexDirection="column" paddingX={1} borderStyle="round" borderColor={placeColor(fileShown)}>
+            <Text bold color={c.ink}>{fileShown.name}</Text>
+            <Text color={c.muted} wrap="wrap">{fileShown.path}</Text>
+            <Text color={c.muted}>
+              {[fileShown.creates ? `created ${fileShown.creates}×` : '', fileShown.edits ? `edited ${fileShown.edits}×` : '', fileShown.reads ? `read ${fileShown.reads}×` : ''].filter(Boolean).join(' · ')}
             </Text>
-            {list.filter(c => c.target === opened.path).slice(-8).reverse().map(c => actionRow(c, 'file'))}
+            {list.filter(call => call.target === fileShown.path).slice(-8).reverse().map(call => actionRow(call, 'file'))}
           </Box>
         ) : null}
       </Box>
-    ) : null
+    )
 
     // Checkpoints: pause and save where things stand, recap just that section, pick it up later.
-    const railText = (steps: { status: string }[]) =>
-      steps.slice(0, 40).map(st => (st.status === 'done' ? '█' : st.status === 'active' ? '●' : st.status === 'failed' ? '✕' : '░')).join('')
     // A decision left for later: the question, its options, and one button per option to continue with it.
     const choicesOf = (cp: Checkpoint) => (cp.pending?.length === 1 ? cp.pending[0]!.options : [])
     // The menu's times, with one set by /live autosave that the menu does not offer put in its place, before Off.
     const everyMin = Math.round(every / 60_000)
-    const everyChoices = AUTOSAVE_CHOICES.includes(everyMin) ? AUTOSAVE_CHOICES : [...AUTOSAVE_CHOICES.filter(m => m > 0), everyMin].sort((x, y) => x - y).concat(0)
-    const decision = (cp: Checkpoint, where: string) => {
-      const open = cp.pending ?? []
-      if (open.length === 0) return null
+    const everyChoices = AUTOSAVE_CHOICES.includes(everyMin) ? AUTOSAVE_CHOICES : [...AUTOSAVE_CHOICES.filter(min => min > 0), everyMin].sort((x, y) => x - y).concat(0)
+    const decision = (cp: Checkpoint, place: string) => {
+      const pending = cp.pending ?? []
+      if (pending.length === 0) return null
       const options = choicesOf(cp)
       const pick = options.findIndex(o => /\(recommended\)\s*$/i.test(o.label))
       return (
-        <Box key={`${where}-decide-${cp.id}`} flexDirection="column" gap={1} marginTop={1}>
-          <Text bold color={PAL.now}>{open.length > 1 ? 'Decisions to make' : 'Decision to make'}</Text>
-          {open.map((q, qi) => (
-            <Text key={`${where}-q-${cp.id}-${qi}`} wrap="wrap">{q.question}</Text>
+        <Box key={`${place}-decide-${cp.id}`} flexDirection="column" gap={1} marginTop={1}>
+          <Text bold color={c.accent}>{pending.length > 1 ? 'Decisions to make' : 'Decision to make'}</Text>
+          {pending.map((qq, qi) => (
+            <Box key={`${place}-q-${cp.id}-${qi}`} flexDirection="column"><Text wrap="wrap" color={c.ink}>{qq.question}</Text></Box>
           ))}
           {options.map((o, oi) => {
             const label = o.label.replace(/\s*\(recommended\)\s*$/i, '')
             const isMain = oi === (pick >= 0 ? pick : 0)
             return (
-              <Box key={`${where}-opt-${cp.id}-${oi}`} flexDirection="column">
-                <Button key={`${where}-go-${cp.id}-${oi}`} variant={isMain ? 'primary' : 'secondary'} dimColor={isVscode && !isMain} onPress={() => continueFrom($, cp, label)}>
+              <Box key={`${place}-opt-${cp.id}-${oi}`} flexDirection="column">
+                <Button key={`${place}-go-${cp.id}-${oi}`} variant={isMain ? 'primary' : 'secondary'} dimColor={isVscode && !isMain} onPress={() => continueFrom($, cp, label)}>
                   Continue with {label}
-                  {oi === pick ? <Text color={PAL.now}> · Recommended</Text> : null}
+                  {oi === pick ? <Text color={c.accent}> · Recommended</Text> : null}
                 </Button>
-                {o.description ? <Box paddingLeft={2}><Text dimColor wrap="wrap">{o.description}</Text></Box> : null}
+                {o.description ? <Box paddingLeft={2}><Text color={c.muted} wrap="wrap">{o.description}</Text></Box> : null}
               </Box>
             )
           })}
@@ -1253,12 +1325,13 @@ export const register: Register = on => {
       )
     }
     const continueLabel = (cp: Checkpoint) => (cp.pending?.length ? 'Continue and ask me again' : 'Continue from here')
+    const filesText = (n: number) => `${n} file${n === 1 ? '' : 's'} changed`
     const cpDetail = (cp: Checkpoint) => (
-      <Box key={`cp-detail-${cp.id}`} flexDirection="column" borderStyle="round" borderColor={cp.status === 'error' ? PAL.failed : PAL.done} paddingX={1}>
-        {cp.status === 'writing' ? <Text color={PAL.now}>Writing the recap for this checkpoint…</Text> : <Markdown key={`cp-text-${cp.id}`} text={cp.summary} />}
-        <Text dimColor>Snapshot: {cp.snapshot.health} · {cp.snapshot.steps.filter(st => st.status === 'done').length} of {cp.snapshot.steps.length} steps · {cp.snapshot.actions} actions</Text>
-        {cp.snapshot.steps.length ? <Text color={PAL.done}>{railText(cp.snapshot.steps)}</Text> : null}
-        {cp.snapshot.filesChanged.length ? <Text dimColor wrap="wrap">Files changed: {cp.snapshot.filesChanged.slice(0, 8).join(', ')}{cp.snapshot.filesChanged.length > 8 ? ' and more' : ''}</Text> : null}
+      <Box key={`cp-detail-${cp.id}`} flexDirection="column" paddingX={1} paddingY={1} gap={1} borderStyle="round" borderColor={cp.status === 'error' ? c.failed : c.done}>
+        {cp.status === 'writing' ? <Text color={c.accent}>Writing the recap for this checkpoint…</Text> : prose(`cp-text-${cp.id}`, cp.summary)}
+        <Text color={c.muted}>Snapshot: {cp.snapshot.health} · {cp.snapshot.steps.filter(st => st.status === 'done').length} of {cp.snapshot.steps.length} steps · {cp.snapshot.actions} actions</Text>
+        {cp.snapshot.steps.length ? <Text color={c.done}>{railText(cp.snapshot.steps)}</Text> : null}
+        {cp.snapshot.filesChanged.length ? <Text color={c.muted} wrap="wrap">Files changed: {cp.snapshot.filesChanged.slice(0, 8).join(', ')}{cp.snapshot.filesChanged.length > 8 ? ' and more' : ''}</Text> : null}
         {decision(cp, 'cp')}
         {cp.status === 'ready' || cp.pending?.length ? (
           <Box flexDirection="row" gap={1} flexWrap="wrap">
@@ -1268,43 +1341,41 @@ export const register: Register = on => {
         ) : null}
       </Box>
     )
-    const cpBlock = (
-      <Box key="checkpoints" flexDirection="column" marginTop={1}>
-        <Box flexDirection="row" justifyContent="space-between" gap={1}>
-          <Text bold>Checkpoints</Text>
-          <Text dimColor>{cps.length ? `${cps.length} saved` : 'none yet'}</Text>
-        </Box>
+    const cpBody = () => (
+      <Box key="checkpoints" flexDirection="column" gap={1}>
         <Box flexDirection="row" gap={1} flexWrap="wrap" alignItems="center">
           <Button key="cp-save" variant={t.isRunning ? 'primary' : 'secondary'} dimColor={isVscode && !t.isRunning} onPress={() => saveCheckpoint($, t.isRunning)}>
             {t.isRunning ? 'Pause and save checkpoint' : 'Save checkpoint'}
           </Button>
           {Select ? (
-            <Select
-              key="autosave"
-              label="Auto-save"
-              value={String(everyMin)}
-              options={everyChoices.map(min => ({ value: String(min), label: everyLabel(min * 60_000) }))}
-              onSelect={(value: string) => setAutosave($, Number(value) * 60_000)}
-            />
+            <Box flexDirection="row" gap={1} alignItems="center">
+              <Text color={c.muted}>Auto-save</Text>
+              <Select
+                key="autosave"
+                value={String(everyMin)}
+                options={everyChoices.map(min => ({ value: String(min), label: everyLabel(min * 60_000) }))}
+                onSelect={(value: string) => setAutosave($, Number(value) * 60_000)}
+              />
+            </Box>
           ) : (
-            <Text dimColor>Auto-save: {everyLabel(every).toLowerCase()}</Text>
+            <Text color={c.muted}>Auto-save: {everyLabel(every).toLowerCase()}</Text>
           )}
         </Box>
         {cps.length === 0 ? (
-          <Text dimColor wrap="wrap">
+          <Text color={c.muted} wrap="wrap">
             Save a checkpoint to recap this part of the work and continue from it later.
             {every > 0 ? ` The panel also saves one by itself ${everyLabel(every).toLowerCase()} while Claude works, and when a task list is done.` : ''}
           </Text>
         ) : null}
         {[...cps].reverse().slice(0, 4).map(cp => (
           <Box key={`cp-row-${cp.id}`} flexDirection="column">
-            <Button key={`cp-${cp.id}`} plain dimColor={isVscode} onPress={() => update($, openCheckpoint, cur => (cur === cp.id ? '' : cp.id))}>
-              <Text color={cp.status === 'ready' ? PAL.done : cp.status === 'writing' ? PAL.now : PAL.failed}>◆ </Text>
-              #{cps.indexOf(cp) + 1} · {clock(cp.at).slice(0, 5)}
-              {cp.isAuto ? <Text dimColor> · Auto</Text> : null}
-              <Text dimColor> · {cp.snapshot.steps.filter(st => st.status === 'done').length}/{cp.snapshot.steps.length} steps · {cp.snapshot.filesChanged.length} files changed</Text>
-              {cp.pending?.length ? <Text color={PAL.now}> · decision open</Text> : null}
-              <Text dimColor> {cpOpen === cp.id ? '▾' : '▸'}</Text>
+            <Button key={`cp-${cp.id}`} plain onPress={() => update($, openCheckpoint, cur => (cur === cp.id ? '' : cp.id))}>
+              <Text color={cp.status === 'ready' ? c.done : cp.status === 'writing' ? c.accent : c.failed}>◆ </Text>
+              <Text bold color={c.ink}>#{cps.indexOf(cp) + 1} · {clock(cp.at).slice(0, 5)}</Text>
+              {cp.isAuto ? <Text color={c.accent}> · Auto</Text> : null}
+              <Text color={c.muted}> · {cp.snapshot.steps.filter(st => st.status === 'done').length}/{cp.snapshot.steps.length} steps · {filesText(cp.snapshot.filesChanged.length)}</Text>
+              {cp.pending?.length ? <Text color={c.accent}> · decision open</Text> : null}
+              <Text color={c.muted}> {cpOpen === cp.id ? '▾' : '▸'}</Text>
             </Button>
             {cpOpen === cp.id ? cpDetail(cp) : null}
           </Box>
@@ -1312,10 +1383,10 @@ export const register: Register = on => {
       </Box>
     )
     const resumeCard = back && !t.isRunning ? (
-      <Box key="resume" flexDirection="column" borderStyle="round" borderColor={PAL.now} paddingX={1} marginTop={1}>
-        <Text bold color={PAL.now}>Last time, you stopped here</Text>
-        <Text dimColor>Checkpoint from {new Date(back.at).toDateString().slice(4, 10)} at {clock(back.at).slice(0, 5)}</Text>
-        <Markdown key="resume-text" text={back.summary} />
+      <Box key="resume" flexDirection="column" gap={1} borderStyle="round" borderColor={c.accent} {...(c.surface ? { backgroundColor: c.surface } : {})} paddingX={1} paddingY={1} marginTop={1}>
+        <Text bold color={c.accent}>Last time, you stopped here</Text>
+        <Text color={c.muted}>Checkpoint from {new Date(back.at).toDateString().slice(4, 10)} at {clock(back.at).slice(0, 5)}{back.isAuto ? ' · Auto' : ''}</Text>
+        {prose('resume-text', back.summary)}
         {decision(back, 'resume')}
         <Box flexDirection="row" gap={1} flexWrap="wrap">
           <Button key="resume-continue" variant={choicesOf(back).length ? 'secondary' : 'primary'} dimColor={isVscode && choicesOf(back).length > 0} onPress={() => continueFrom($, back)}>{continueLabel(back)}</Button>
@@ -1324,16 +1395,24 @@ export const register: Register = on => {
       </Box>
     ) : null
 
-    // In the "needs you" and "finished" states activity folds away behind one button.
-    const activityToggle = (
-      <Box key="toggle-activity-row" flexDirection="row" marginTop={1}>
-        <Button key="toggle-activity" plain dimColor onPress={() => update($, showDetails, v => !v)}>
-          {expanded ? '▾ Hide what Claude did' : '▸ Show what Claude did'}
-        </Button>
+    const lastSaved = cps.at(-1)
+    const topShare = [...shares].sort((x, y) => y.ms - x.ms)[0]
+    const sections = (
+      <Box key="sections" flexDirection="column" marginTop={1}>
+        {Svg && rule ? <Svg key="sec-top-rule" source={rule.source} alt="" height={rule.height} /> : null}
+        {p.steps.length ? section('steps', 'Steps', `${doneSteps} of ${p.steps.length} · ${Math.round((doneSteps / p.steps.length) * 100)}%`, stepsBody) : null}
+        {section(
+          'checkpoints',
+          'Checkpoints',
+          lastSaved ? `Last #${cps.length} at ${clock(lastSaved.at).slice(0, 5)}${lastSaved.isAuto ? ' · Auto' : ''}` : every > 0 ? `Auto-save ${everyLabel(every).toLowerCase()}` : 'None yet',
+          cpBody,
+        )}
+        {where.length ? section('files', 'Where Claude worked', `${changedCount} changed · ${where.length - changedCount} read`, whereBody) : null}
+        {section('activity', 'Activity', topShare ? `Mostly ${topShare.label.toLowerCase()} · last 10 min` : 'Nothing yet', activityBody)}
       </Box>
     )
 
-    // 6. Talk to Claude without the chat.
+    // 9. Talk to Claude without the chat.
     const talk = (
       <Box key="talk" flexDirection="column" marginTop={1}>
         {Input ? (
@@ -1344,87 +1423,74 @@ export const register: Register = on => {
             onSubmit={(value: string) => send($, value)}
           />
         ) : null}
-        {last ? <Text dimColor wrap="truncate-end">You sent: {last}</Text> : null}
-        {t.isRunning ? (
-          <Box flexDirection="row" gap={1} flexWrap="wrap">
-            <Button key="stop" dimColor onPress={async () => {
-              const cur = await read($, turn)
-              if (cur.isRunning && cur.turnId) await $.turn.abort({ turnId: cur.turnId }).catch(() => undefined)
-            }}>Stop Claude</Button>
-          </Box>
-        ) : null}
+        {last ? <Text color={c.muted} wrap="truncate-end">You sent: {last}</Text> : null}
       </Box>
     )
 
-    const script = f.path !== '' ? progress('feed', `Script: ${f.title || f.path}`, f.steps, state !== 'working', f.error ? `Following ${f.path} (${f.error})` : undefined) : null
-    const planBlock = progress('plan', p.title || 'Progress', p.steps, state !== 'working')
+    // The page: painted in the look picked, except on the terminal.
+    const page = c.bg ? { backgroundColor: c.bg, paddingX: 1, paddingY: 1 } : {}
 
-    if (state === 'idle' && !planBlock && !script && list.length === 0) {
+    if (state === 'idle' && p.steps.length === 0 && !script && list.length === 0) {
       return (
-        <Box flexDirection="column">
+        <Box flexDirection="column" {...page}>
           {header}
+          {tiles}
           {bgBlock}
           {resumeCard}
           <Box flexDirection="column" marginTop={1}>
-            <Text bold>Ready when you are</Text>
-            <Text dimColor>Send a message to start. Progress, activity and any questions for you will show here.</Text>
+            <Text bold color={c.ink}>Ready when you are</Text>
+            <Text color={c.muted}>Send a message to start. Progress, activity and any questions for you will show here.</Text>
           </Box>
           {summaryCard}
+          {sections}
           {talk}
         </Box>
       )
     }
     if (state === 'ask') {
       return (
-        <Box flexDirection="column">
+        <Box flexDirection="column" {...page}>
           {header}
-          {card}
+          {askCard}
           {bgBlock}
-          {planBlock}
+          {tiles}
           {script}
-          {activityToggle}
-          {expanded ? activity : null}
+          {sections}
         </Box>
       )
     }
     if (state === 'finished') {
       return (
-        <Box flexDirection="column">
+        <Box flexDirection="column" {...page}>
           {header}
           <Box key="finished" flexDirection="column" marginTop={1}>
             {bgRunning ? (
-              <Text bold color={PAL.now}>Waiting on background work · Claude's turn took {duration(t.endedAt - t.startedAt)}</Text>
+              <Text bold color={c.accent}>Waiting on background work · Claude's turn took {duration(t.endedAt - t.startedAt)}</Text>
             ) : (
-              <Text bold color={PAL.done}>Task finished · {duration(t.endedAt - t.startedAt)}</Text>
+              <Text bold color={c.done}>Task finished · {duration(t.endedAt - t.startedAt)}</Text>
             )}
           </Box>
-          {bgBlock}
-          {resumeCard}
           {summaryCard}
-          {ring(p.steps, p.title || 'Progress')}
-          {stepsList(p.steps)}
-          {cpBlock}
-          {whereBlock}
+          {resumeCard}
+          {dial}
+          {tiles}
+          {bgBlock}
           {script}
-          {activityToggle}
-          {expanded ? activity : null}
+          {sections}
           {talk}
         </Box>
       )
     }
-    // Working: the ring and Claude's own words first; files and raw actions fold away behind one button.
+    // Working: the dial and the tiles first, then what runs now and in the background; the detail folds away.
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" {...page}>
         {header}
-        {ring(p.steps, p.title || 'Progress')}
-        {narrationBlock}
+        {dial}
+        {tiles}
+        {nowBlock}
         {bgBlock}
-        {stepsList(p.steps)}
         {script}
-        {cpBlock}
-        {activityToggle}
-        {expanded ? whereBlock : null}
-        {expanded ? activity : null}
+        {sections}
         {summaryCard}
         {talk}
       </Box>

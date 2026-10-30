@@ -151,6 +151,12 @@ declare module 'claude-code' {
       sessionStart: number
       /** How often the panel saves a checkpoint on its own, in milliseconds; 0 is off. */
       autosave: number
+      /** The look the person picked with the panel's toggle; '' follows their Claude Code theme. */
+      themeChoice: '' | 'light' | 'dark'
+      /** The look that matches their Claude Code theme setting. */
+      appTheme: 'light' | 'dark'
+      /** The folding sections that are open: steps, checkpoints, files, activity. */
+      openSections: string[]
     }
   }
 }

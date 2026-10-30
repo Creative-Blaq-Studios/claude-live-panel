@@ -2,6 +2,23 @@
 
 This file tells about the changes in each version of the Live panel.
 
+## 1.8.0 (2026-10-31)
+
+### Added
+
+- A new design: the turn dial. The time of Claude's current turn is in the center of a dial, and the arc shows how much of the estimated time is used. Under the dial, push Pause, Stop or Save.
+- Light and dark looks. At first, the panel uses the look that matches your Claude Code theme setting. Push Light or Dark at the top of the panel to change it. The panel keeps your choice for all sessions. In the terminal, the panel uses the colors of your terminal theme.
+- The Session and Next auto-save tiles. Next auto-save tells when the panel saves the next checkpoint by itself.
+- A small ring for each task in the background. It turns one time each minute while the work continues.
+
+### Changed
+
+- Steps, Checkpoints, Where Claude worked and Activity are folding sections. Each one shows one line with a summary. Click the line to open the section.
+- The Now card holds the step bar, the current step with its timer, Claude's update in plain words and the next step.
+- The session time moved from the top line to the Session tile.
+- Stop Claude moved from the message box to the dial.
+- A checkpoint row tells "1 file changed", not "1 files changed".
+
 ## 1.7.0 (2026-10-31)
 
 ### Added

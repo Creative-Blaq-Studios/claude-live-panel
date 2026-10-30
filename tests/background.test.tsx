@@ -72,7 +72,8 @@ test('a background helper shows with its timer and latest action, on every surfa
 
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ text: /Running in the background · 1/ })).toBeDefined()
+    expect(await ui.find({ text: /^Running in the background$/ })).toBeDefined()
+    expect(await ui.find({ text: /1 running/ })).toBeDefined()
     expect(await ui.find({ text: /Review Task 1/ })).toBeDefined()
     expect(await ui.find({ text: /Starting/ })).toBeDefined()
     await ui.unmount()

@@ -72,6 +72,70 @@ export function ringSvg(steps: Step[], size: number): { source: string; alt: str
   return { source: s, alt: `${done} of ${steps.length} steps done${now ? `; now on: ${now.title}` : ''}` }
 }
 
+/** The turn's dial: a ring of ticks, a track, and an arc for the share of the estimate used; the time in the middle. */
+export function dialSvg(
+  dial: { fraction: number; time: string; note: string; color: string; track: string; tick: string; ink: string; muted: string; knob: string },
+  size: number,
+): { source: string; alt: string } {
+  const mid = size / 2
+  const outer = mid - 5
+  const ticks = 2 * Math.PI * outer
+  const r = mid - 22
+  const c = 2 * Math.PI * r
+  const share = Math.max(0, Math.min(1, dial.fraction))
+  const angle = share * 2 * Math.PI - Math.PI / 2
+  const font = `font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif"`
+  let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">`
+  s += `<circle cx="${mid}" cy="${mid}" r="${outer.toFixed(1)}" fill="none" stroke="${dial.tick}" stroke-width="5" stroke-linecap="round" stroke-dasharray="1.5 ${(ticks / 60 - 1.5).toFixed(2)}"/>`
+  s += `<circle cx="${mid}" cy="${mid}" r="${r.toFixed(1)}" fill="none" stroke="${dial.track}" stroke-width="11"/>`
+  if (share > 0) {
+    s += `<circle cx="${mid}" cy="${mid}" r="${r.toFixed(1)}" fill="none" stroke="${dial.color}" stroke-width="11" stroke-linecap="round" stroke-dasharray="${(share * c).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 ${mid} ${mid})"/>`
+    s += `<circle cx="${(mid + r * Math.cos(angle)).toFixed(1)}" cy="${(mid + r * Math.sin(angle)).toFixed(1)}" r="6.5" fill="${dial.knob}" stroke="${dial.color}" stroke-width="4"/>`
+  }
+  s += `<text x="${mid}" y="${(mid + 8).toFixed(1)}" text-anchor="middle" font-size="${Math.round(size * 0.19)}" font-weight="800" fill="${dial.ink}" ${font} style="font-variant-numeric:tabular-nums">${esc(dial.time)}</text>`
+  s += `<text x="${mid}" y="${(mid + 32).toFixed(1)}" text-anchor="middle" font-size="12" fill="${dial.muted}" ${font}>${esc(dial.note)}</text>`
+  s += '</svg>'
+
+  return { source: s, alt: `${dial.time}, ${dial.note}` }
+}
+
+/** A small ring for a background task: its arc sweeps once a minute, like a stopwatch. */
+export function miniRingSvg(fraction: number, color: string, track: string, size: number): { source: string; alt: string } {
+  const mid = size / 2
+  const stroke = 3.5
+  const r = mid - stroke
+  const c = 2 * Math.PI * r
+  const share = Math.max(0.04, Math.min(1, fraction))
+  let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">`
+  s += `<circle cx="${mid}" cy="${mid}" r="${r.toFixed(1)}" fill="none" stroke="${track}" stroke-width="${stroke}"/>`
+  s += `<circle cx="${mid}" cy="${mid}" r="${r.toFixed(1)}" fill="none" stroke="${color}" stroke-width="${stroke}" stroke-linecap="round" stroke-dasharray="${(share * c).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 ${mid} ${mid})"/>`
+  s += '</svg>'
+
+  return { source: s, alt: '' }
+}
+
+/** The plan as thin segments, one per step: done, now, waiting or failed. Hovering one names its step. */
+export function segmentsSvg(steps: Step[], colors: { done: string; now: string; waiting: string; failed: string }, width: number): { source: string; alt: string; height: number } {
+  const shown = steps.slice(0, 30)
+  const gap = shown.length > 16 ? 4 : 8
+  const segW = Math.max(3, (width - gap * (shown.length - 1)) / Math.max(1, shown.length))
+  const height = 6
+  const color = { done: colors.done, active: colors.now, pending: colors.waiting, failed: colors.failed }
+  let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">`
+  shown.forEach((step, i) => {
+    s += `<rect x="${(i * (segW + gap)).toFixed(1)}" y="0" width="${segW.toFixed(1)}" height="${height}" rx="3" fill="${color[step.status]}"><title>${esc(`${i + 1}. ${step.title} (${STATUS[step.status]})`)}</title></rect>`
+  })
+  s += '</svg>'
+  const done = steps.filter(st => st.status === 'done').length
+
+  return { source: s, alt: `${done} of ${steps.length} steps done`, height }
+}
+
+/** A hairline across the panel, between the folding sections. */
+export function hairlineSvg(color: string): { source: string; height: number } {
+  return { source: `<svg xmlns="http://www.w3.org/2000/svg" width="${BAR_WIDTH}" height="1" viewBox="0 0 ${BAR_WIDTH} 1" preserveAspectRatio="none"><rect width="${BAR_WIDTH}" height="1" fill="${color}"/></svg>`, height: 1 }
+}
+
 /** Where the last 10 minutes went: one bar split by kind of work. Hover a segment for its share. */
 export function activitySvg(shares: Share[], width: number): { source: string; alt: string; height: number } {
   const total = shares.reduce((sum, x) => sum + x.ms, 0)

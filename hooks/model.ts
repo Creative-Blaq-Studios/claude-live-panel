@@ -18,6 +18,14 @@ export function duration(ms: number): string {
   return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`
 }
 
+/** A stopwatch reading: "4:23", "18:40", "1:02:05". */
+export function clockTime(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  const mm = String(Math.floor((s % 3600) / 60))
+  const ss = String(s % 60).padStart(2, '0')
+  return s < 3600 ? `${mm}:${ss}` : `${Math.floor(s / 3600)}:${mm.padStart(2, '0')}:${ss}`
+}
+
 /** How long the session has run, to the minute: "0m", "14m", "2h 31m", "1d 03h". */
 export function sessionLength(ms: number): string {
   const m = Math.max(0, Math.floor(ms / 60_000))

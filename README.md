@@ -14,20 +14,27 @@ Refer to [CHANGELOG.md](CHANGELOG.md) for the changes in each version.
 
 | Part | What it shows |
 | --- | --- |
-| Health signal | One word that tells you the status: Needs you, Failed, Finished, Slow, On track, Working or Ready. |
-| Session time | When the session started and how long it has run, for example "Session · started 09:14 · 2h 31m". It shows at the top of the panel at all times. |
-| Model and effort | The model that does the work and its effort level. Use the Effort menu to change the level. |
+| Status | One word that tells you the status: Needs you, Failed, Finished, Slow, On track, Working or Ready. Next to it, push Light or Dark to change the look of the panel. |
+| Model and effort | The model that does the work, the name of the task and the effort level. Use the Effort menu to change the level. |
 | Questions | The questions that Claude asks you. When there are several, each question has a tab. Push an answer button or type an answer, then push Send answers. |
-| Progress | A ring that shows how much of the task is done. It also shows the time spent, the time left, the current step and the next step. |
-| Claude's updates | What Claude does now, in plain words. A short update in Claude's words comes when the step changes, or about one time each minute. |
-| Running in the background | Each helper and command that Claude started in the background, with a timer and its latest action. When Claude's turn ends but this work continues, the panel shows Waiting on background work. |
-| Steps | Each step of the task with the time it took. |
-| Where Claude worked | The files that Claude created, edited or read. Click a file to see the actions on that file. |
-| Activity | A bar that shows how Claude used the last 10 minutes. It also shows the latest actions. |
-| Action details | Click an action to see the full command or file. You also see the result or the error. |
+| Turn dial | The time of Claude's current turn, in the center of a dial. The arc shows how much of the estimated time is used, and the text under the time shows the time left. Push Pause to stop Claude and save a checkpoint, Stop to stop Claude, or Save to save a checkpoint and continue. |
+| Session and Next auto-save | Two tiles. Session shows how long the session has run and when it started. Next auto-save shows when the panel saves the next checkpoint by itself. |
+| Now | A bar with one part for each step, the current step with its timer, what Claude does now in plain words, and the next step. A short update in Claude's words comes when the step changes, or about one time each minute. |
+| Running in the background | Each helper and command that Claude started in the background, with a timer and its latest action. The small ring turns one time each minute while the work continues. When Claude's turn ends but this work continues, the panel shows Waiting on background work. |
+| Steps | A folding section. Each step of the task with the time it took. |
+| Checkpoints | A folding section. Push Pause and save checkpoint to stop Claude and save the status. The checkpoint has a short recap and a snapshot of the panel. Push Continue from here to start again from it. The panel also saves checkpoints by itself. Use the Auto-save menu to set how often. |
+| Where Claude worked | A folding section. The files that Claude created, edited or read. Click a file to see the actions on that file. |
+| Activity | A folding section. A bar that shows how Claude used the last 10 minutes, and the latest actions. Click an action to see the full command or file, and the result or the error. |
 | Recap | When Claude stops, the panel can write a recap. Select Summary, What changed or What's next. The recap uses ASD-STE100 Simplified Technical English. Push Copy to copy it, or push Open full view to read it in a tab. |
-| Checkpoints | Push Pause and save checkpoint to stop Claude and save the status. The checkpoint has a short recap and a snapshot of the panel. Push Continue from here to start again from it. The panel also saves checkpoints by itself. Use the Auto-save menu to set how often. |
-| Message box | Type a message to Claude. Push Stop Claude to stop the work. |
+| Message box | Type a message to Claude. |
+
+Each folding section shows one line with a summary, for example "Checkpoints · Last #2 at 00:15 · Auto". Click the line to open or close the section.
+
+### Light and dark
+
+The panel has a light look and a dark look. At first, the panel uses the look that matches your Claude Code theme setting. Push Light or Dark at the top of the panel to change it. The panel keeps your choice for all sessions.
+
+In the terminal, the panel uses the colors of your terminal theme.
 
 Hold the pointer on a part of a bar to see more data.
 
@@ -39,7 +46,7 @@ The panel keeps the checkpoints for each project. When you start a new session i
 
 ### Session time
 
-The top of the panel shows when the session started and how long it has run. The time includes breaks. When you resume a session, the time counts from the first start of that session. After `/clear`, the time starts again. When the session started on a different day, the date shows too.
+The Session tile shows when the session started and how long it has run. The time includes breaks. When you resume a session, the time counts from the first start of that session. After `/clear`, the time starts again. When the session started on a different day, the date shows too.
 
 ### Automatic checkpoints
 
