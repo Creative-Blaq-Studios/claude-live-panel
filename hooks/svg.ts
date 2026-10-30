@@ -131,11 +131,6 @@ export function segmentsSvg(steps: Step[], colors: { done: string; now: string; 
   return { source: s, alt: `${done} of ${steps.length} steps done`, height }
 }
 
-/** A hairline across the panel, between the folding sections. */
-export function hairlineSvg(color: string): { source: string; height: number } {
-  return { source: `<svg xmlns="http://www.w3.org/2000/svg" width="${BAR_WIDTH}" height="1" viewBox="0 0 ${BAR_WIDTH} 1" preserveAspectRatio="none"><rect width="${BAR_WIDTH}" height="1" fill="${color}"/></svg>`, height: 1 }
-}
-
 /** Where the last 10 minutes went: one bar split by kind of work. Hover a segment for its share. */
 export function activitySvg(shares: Share[], width: number): { source: string; alt: string; height: number } {
   const total = shares.reduce((sum, x) => sum + x.ms, 0)

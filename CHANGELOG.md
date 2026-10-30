@@ -2,6 +2,12 @@
 
 This file tells about the changes in each version of the Live panel.
 
+## 1.8.3 (2026-10-31)
+
+### Changed
+
+- The folding sections look like they open. Each one is a card with an outline, and the arrow is before the name: ▸ when it is closed and ▾ when it is open. The outline of an open section is clay.
+
 ## 1.8.2 (2026-10-31)
 
 ### Fixed

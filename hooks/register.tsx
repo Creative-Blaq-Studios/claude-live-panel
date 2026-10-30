@@ -51,7 +51,7 @@ import {
   steClean,
   timeLeft,
 } from './model'
-import { activitySvg, BAR_WIDTH, dialSvg, hairlineSvg, miniRingSvg, railSvg, segmentsSvg } from './svg'
+import { activitySvg, BAR_WIDTH, dialSvg, miniRingSvg, railSvg, segmentsSvg } from './svg'
 import type { ThemeName } from './theme'
 import { APP, DARK, LIGHT, themeFrom } from './theme'
 
@@ -1161,18 +1161,17 @@ export const register: Register = on => {
     }
     const script = f.path !== '' ? progress('feed', `Script: ${f.title || f.path}`, f.steps, state !== 'working', f.error ? `Following ${f.path} (${f.error})` : undefined) : null
 
-    // 8. The folding sections, on the app's ground: one line each with its summary; open one for the detail.
-    const rule = Svg ? hairlineSvg(`${u.line}66`) : undefined
+    // 8. The folding sections, on the app's ground: an outlined card each, the arrow before the title as
+    // in any disclosure list, its summary on the right; an open one's outline turns clay.
     const section = (id: string, title: string, note: string, body: () => JSX.Element | null) => {
       const isOpen = opened.includes(id)
       return (
-        <Box key={`sec-${id}`} flexDirection="column">
+        <Box key={`sec-${id}`} flexDirection="column" paddingX={2} borderStyle="round" borderColor={isOpen ? u.accent : u.line}>
           <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1} paddingY={1}>
-            <Button key={`sec-${id}-toggle`} plain onPress={() => toggleSection($, id)}>{title}</Button>
-            <Button key={`sec-${id}-note`} plain dimColor onPress={() => toggleSection($, id)}>{note} {isOpen ? '▾' : '▸'}</Button>
+            <Button key={`sec-${id}-toggle`} plain onPress={() => toggleSection($, id)}>{isOpen ? '▾' : '▸'}  {title}</Button>
+            <Button key={`sec-${id}-note`} plain dimColor onPress={() => toggleSection($, id)}>{note}</Button>
           </Box>
           {isOpen ? <Box flexDirection="column" gap={1} paddingBottom={1}>{body()}</Box> : null}
-          {Svg && rule ? <Svg key={`sec-${id}-rule`} source={rule.source} alt="" height={rule.height} /> : null}
         </Box>
       )
     }
@@ -1401,8 +1400,7 @@ export const register: Register = on => {
     const lastSaved = cps.at(-1)
     const topShare = [...shares].sort((x, y) => y.ms - x.ms)[0]
     const sections = (
-      <Box key="sections" flexDirection="column" marginTop={2}>
-        {Svg && rule ? <Svg key="sec-top-rule" source={rule.source} alt="" height={rule.height} /> : null}
+      <Box key="sections" flexDirection="column" gap={1} marginTop={2}>
         {p.steps.length ? section('steps', 'Steps', `${doneSteps} of ${p.steps.length} · ${Math.round((doneSteps / p.steps.length) * 100)}%`, stepsBody) : null}
         {section(
           'checkpoints',

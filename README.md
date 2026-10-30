@@ -28,7 +28,7 @@ Refer to [CHANGELOG.md](CHANGELOG.md) for the changes in each version.
 | Recap | When Claude stops, the panel can write a recap. Select Summary, What changed or What's next. The recap uses ASD-STE100 Simplified Technical English. Push Copy to copy it, or push Open full view to read it in a tab. |
 | Message box | Type a message to Claude. |
 
-Each folding section shows one line with a summary, for example "Checkpoints · Last #2 at 00:15 · Auto". Click the line to open or close the section.
+Each folding section is a card with one line: an arrow, the name and a summary, for example "▸ Checkpoints · Last #2 at 00:15 · Auto". Click the line to open or close the section. The arrow is ▾ and the outline is clay when the section is open.
 
 ### Light and dark
 
