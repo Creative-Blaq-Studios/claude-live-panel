@@ -31,6 +31,10 @@ export const shellIdFrom = (text: string) => text.match(/in background with ID:\
 
 const endStatus = (word: string): BgStatus => (word === 'failed' ? 'failed' : word === 'killed' || word === 'stopped' ? 'stopped' : 'done')
 
+/** A prompt the person wrote: not a notice they did not type (`isMeta`), not a slash command, not only task notifications. */
+export const isPersonsReply = (e: { text: string; isMeta?: boolean; command?: unknown }) =>
+  !e.isMeta && e.command === undefined && e.text.replace(/<task-notification>[\s\S]*?<\/task-notification>/g, '').trim() !== ''
+
 /** Every task a message's <task-notification> blocks report as ended. */
 export const endedTasks = (text: string): { id: string; status: BgStatus }[] =>
   [...text.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)].flatMap(m => {

@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Ask, AskQuestion, BgTask, Call, Checkpoint, EffortLevel, Engine, Feed, Narration, Plan, QuestionMode, RecapScope, Snapshot, Step, Summary, SummaryKind, Turn } from '../types'
-import { agentEnd, endedTasks, endTask, noteAction, QUIET_AFTER, quietFor, setShellId, shellIdFrom, startTask, visibleTasks } from './background'
+import { agentEnd, endedTasks, endTask, isPersonsReply, noteAction, QUIET_AFTER, quietFor, setShellId, shellIdFrom, startTask, visibleTasks } from './background'
 import {
   AUTOSAVE_CHOICES,
   CHECKPOINTS,
@@ -639,6 +639,11 @@ export const register: Register = on => {
       const choice = choiceFromWrapUp(input, e.tool_use_id, now)
       if (choice) await update($, ask, () => choice)
     }
+    // Claude went on with the work in a later turn: a question it asked before that is settled.
+    if (isMain && tool !== 'AskUserQuestion' && tool !== 'mcp__ccd_turn__wrap_up' && !isPlanTool(tool)) {
+      const asked = await read($, ask)
+      if (asked && asked.at < (await read($, turn)).startedAt) await update($, ask, cur => (cur?.id === asked.id ? null : cur))
+    }
 
     const what = classify(tool, input)
     if (e.agentId !== undefined) {
@@ -716,6 +721,9 @@ export const register: Register = on => {
     if (ended.length > 0) {
       await update($, background, list => ended.reduce((acc, x) => endTask(acc, x.id, x.status, Date.now()), list))
     }
+    // The person wrote to Claude, in the chat or anywhere else: an open question card is answered, or
+    // no longer the question. A notice they did not type, and a slash command, leave it open.
+    if (isPersonsReply(e)) await update($, ask, () => null)
     return next(e)
   }).catch(($, e, next) => next(e))
 

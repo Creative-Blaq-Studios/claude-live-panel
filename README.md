@@ -16,7 +16,7 @@ Refer to [CHANGELOG.md](CHANGELOG.md) for the changes in each version.
 | --- | --- |
 | Status | One word that tells you the status: Needs you, Failed, Finished, Slow, On track, Working or Ready. Next to it, push Light or Dark to change the look of the panel. |
 | Model and effort | The model that does the work, the name of the task and the effort level. Use the Effort menu to change the level. |
-| Questions | The questions that Claude asks you. When there are several, each question has a tab. Push an answer button or type an answer, then push Send answers. |
+| Questions | The questions that Claude asks you. When there are several, each question has a tab. Push an answer button or type an answer, then push Send answers. The card closes by itself when you answer in the chat, or when Claude works again in a later turn. |
 | Turn dial | The time of Claude's current turn, in the center of a dial. The arc shows how much of the estimated time is used, and the text under the time shows the time left. Under the dial, the card shows how much of the task is done, the number of steps done and the number of files changed. Push Pause to stop Claude and save a checkpoint, Stop to stop Claude, or Save to save a checkpoint and continue. |
 | Session and Next auto-save | Two tiles. Session shows how long the session has run and when it started. Next auto-save shows when the panel saves the next checkpoint by itself. |
 | Now | A bar with one part for each step, the current step with its timer, what Claude does now, Claude's latest update and the two updates before it, and the next step. A short update in Claude's words comes when the step changes, or about one time each minute. |

@@ -2,6 +2,14 @@
 
 This file tells about the changes in each version of the Live panel.
 
+## 1.8.4 (2026-10-31)
+
+### Changed
+
+- A question card closes by itself when it no longer applies:
+  - When you write to Claude in the chat, or anywhere other than the card. A notice that you did not type, such as the end of a background task, and a slash command do not close it.
+  - When Claude works again in a later turn, for example after background work ends. A question from the turn that runs now stays open until you answer it.
+
 ## 1.8.3 (2026-10-31)
 
 ### Changed

@@ -344,3 +344,44 @@ test('after a turn, the dial tells when it ended and the steps done, without rep
     await ui.unmount()
   }
 })
+
+const askInPanel = async ($: Parameters<TestBody>[0], turnId: string) => {
+  await $.turn.start({ text: 'Go', turnId })
+  await $.tool.call({ tool: 'AskUserQuestion', questions: [{ question: 'Which look first?', header: 'Look', options: [{ label: 'Light' }, { label: 'Dark' }], multiSelect: false }] } as never)
+}
+
+test('a question card stays while its turn runs, and closes when Claude works on in a later turn', async ($, on) => {
+  engine(on, { autosave: 0 })
+  await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
+  await askInPanel($, 't1')
+  await $.tool.call({ tool: 'Read', file_path: '/work/app/a.ts' } as never)
+
+  let ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ text: /Which look first\?/ })).toBeDefined()
+  await ui.unmount()
+
+  await $.turn.complete({ answer: '', durationMs: 10, isAborted: true, turnId: 't1', reason: 'aborted' })
+  tickOn()
+  await $.turn.start({ text: 'A background task finished.', turnId: 't2' })
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ text: /Which look first\?/ })).toBeDefined()
+  await ui.unmount()
+
+  await $.tool.call({ tool: 'Read', file_path: '/work/app/b.ts' } as never)
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ text: /Which look first\?/ })).toBeUndefined()
+  expect(await ui.find({ text: /Needs you/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a question card closes when the person writes to Claude in the chat', async ($, on) => {
+  engine(on, { autosave: 0 })
+  on('prompt.submit', (_, e) => ({ text: e.text }) as never)
+  await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
+  await askInPanel($, 't1')
+
+  await $.prompt.submit({ text: 'Dark first, please.' } as never)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ text: /Which look first\?/ })).toBeUndefined()
+  await ui.unmount()
+})

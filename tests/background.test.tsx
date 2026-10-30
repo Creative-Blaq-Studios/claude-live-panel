@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { agentEnd, endedTasks, endTask, noteAction, quietFor, setShellId, shellIdFrom, startTask, visibleTasks } from '../hooks/background'
+import { agentEnd, endedTasks, endTask, isPersonsReply, noteAction, quietFor, setShellId, shellIdFrom, startTask, visibleTasks } from '../hooks/background'
 import type { BgTask } from '../types'
 
 const PANE = {
@@ -78,4 +78,12 @@ test('a background helper shows with its timer and latest action, on every surfa
     expect(await ui.find({ text: /Starting/ })).toBeDefined()
     await ui.unmount()
   }
+})
+
+test('only a message the person wrote counts as their reply', async () => {
+  expect(isPersonsReply({ text: 'Use the dial' })).toBe(true)
+  expect(isPersonsReply({ text: 'Use the dial', isMeta: true })).toBe(false)
+  expect(isPersonsReply({ text: '/reload-plugins', command: { name: 'reload-plugins' } })).toBe(false)
+  expect(isPersonsReply({ text: '<task-notification><task-id>ag1</task-id><status>completed</status></task-notification>' })).toBe(false)
+  expect(isPersonsReply({ text: '<task-notification><task-id>ag1</task-id></task-notification> and ship it' })).toBe(true)
 })
