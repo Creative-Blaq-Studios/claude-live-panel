@@ -1,7 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Ask, AskQuestion, Call, Checkpoint, EffortLevel, Engine, Feed, Narration, Plan, QuestionMode, RecapScope, Snapshot, Step, Summary, SummaryKind, Turn } from '../types'
+import type { Ask, AskQuestion, BgTask, Call, Checkpoint, EffortLevel, Engine, Feed, Narration, Plan, QuestionMode, RecapScope, Snapshot, Step, Summary, SummaryKind, Turn } from '../types'
+import { agentEnd, endedTasks, endTask, noteAction, QUIET_AFTER, quietFor, setShellId, shellIdFrom, startTask, visibleTasks } from './background'
 import type { Tone } from './model'
 import {
   activityShares,
@@ -63,6 +64,7 @@ const recapScope = atom({ plugin: 'live-view', key: 'recapScope' } as const, 'si
 const resume = atom({ plugin: 'live-view', key: 'resume' } as const, null as Checkpoint | null)
 const narration = atom({ plugin: 'live-view', key: 'narration' } as const, [] as Narration[])
 const narrateOn = atom({ plugin: 'live-view', key: 'narrateOn' } as const, true)
+const background = atom({ plugin: 'live-view', key: 'background' } as const, [] as BgTask[])
 
 const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: TITLE }).catch(() => ({ isPlaced: false }))
 /** The recap in a tab of its own, full height, so a long one reads top to bottom. */
@@ -288,6 +290,7 @@ export const register: Register = on => {
     let narratedAt = 0
     let narratedStep = ''
     let isNarrating = false
+    let listedAt = 0
     $.clock.every(1000, async () => {
       const f = await read($, feed)
       if (f.path !== '') {
@@ -300,7 +303,21 @@ export const register: Register = on => {
       }
       const t = await read($, turn)
       const active = f.steps.some(s => s.status === 'active')
-      if (t.isRunning || active || (await read($, ask))) await update($, tick, () => Date.now())
+      const waitsOnBackground = (await read($, background)).some(b => b.status === 'running')
+      if (t.isRunning || active || waitsOnBackground || (await read($, ask))) await update($, tick, () => Date.now())
+      // A helper whose end the engine never announced: its loop's own status settles it.
+      if (waitsOnBackground && Date.now() - listedAt > 5000) {
+        listedAt = Date.now()
+        const loops = await $.agent.list().catch(() => undefined)
+        if (loops) {
+          await update($, background, list =>
+            loops.reduce((acc, loop) => {
+              const end = agentEnd(loop.status)
+              return end ? endTask(acc, loop.id, end, Date.now()) : acc
+            }, list),
+          )
+        }
+      }
 
       // A new line when the step changes, else at most once a minute, and only after new actions.
       if (!t.isRunning || isNarrating || !(await read($, narrateOn))) return
@@ -412,6 +429,10 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    if (e.agentId !== undefined) {
+      const ended = e.agentId
+      await update($, background, list => endTask(list, ended, e.isAborted ? 'stopped' : 'done', Date.now()))
+    }
     if (e.agentId === undefined) {
       const ended = Date.now()
       await update($, turn, t => ({ ...t, isRunning: false, endedAt: ended }))
@@ -450,6 +471,14 @@ export const register: Register = on => {
     }
 
     const what = classify(tool, input)
+    if (e.agentId !== undefined) {
+      const helper = e.agentId
+      await update($, background, list => noteAction(list, helper, what.detail ? `${what.label} · ${clip(what.detail, 60)}` : what.label, now))
+    }
+    const isBgShell = tool === 'Bash' && input.run_in_background === true
+    if (isBgShell) {
+      await update($, background, list => startTask(list, { id: e.tool_use_id, kind: 'shell', title: what.detail || 'A command', startedAt: now, status: 'running', actions: 0 }, now))
+    }
     const file = ['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(tool)
       ? String(input.file_path ?? input.notebook_path ?? '')
       : ''
@@ -491,7 +520,33 @@ export const register: Register = on => {
       throw error
     } finally {
       await finish(failed, output)
+      if (isBgShell) {
+        const shellId = output ? shellIdFrom(output) : undefined
+        await update($, background, list => (failed ? endTask(list, entry.id, 'failed', Date.now()) : shellId ? setShellId(list, entry.id, shellId) : list))
+      }
+      const stopped = tool === 'TaskStop' && !failed ? String(input.task_id ?? input.shell_id ?? '') : ''
+      if (stopped) await update($, background, list => endTask(list, stopped, 'stopped', Date.now()))
     }
+  }).catch(($, e, next) => next(e))
+
+  // A helper Claude sent to the background: follow it until its own turn ends.
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+    if (e.background && started.deny === undefined && started.agentId && !started.teammateId) {
+      const now = Date.now()
+      const task: BgTask = { id: started.agentId, kind: 'agent', title: e.description || e.subagentType || 'A helper', startedAt: now, status: 'running', actions: 0 }
+      await update($, background, list => startTask(list, task, now))
+    }
+    return started
+  }).catch(($, e, next) => next(e))
+
+  // A background task's end reaches Claude as a <task-notification> message.
+  on('prompt.submit', async ($, e, next) => {
+    const ended = endedTasks(e.text)
+    if (ended.length > 0) {
+      await update($, background, list => ended.reduce((acc, x) => endTask(acc, x.id, x.status, Date.now()), list))
+    }
+    return next(e)
   }).catch(($, e, next) => next(e))
 
   on('ui.render', { component: 'Pane', requestId: RECAP_PANE }, async ($, e) => {
@@ -545,6 +600,8 @@ export const register: Register = on => {
     const lastCp = lastReady(cps)
     await read($, tick)
     const now = Date.now()
+    const bg = visibleTasks(await read($, background), now)
+    const bgRunning = bg.filter(b => b.status === 'running').length
     const cols = Math.max(28, (e.props as { bodyColumns?: number }).bodyColumns ?? e.viewport?.columns ?? 48)
     const px = Math.round(Math.min(560, Math.max(260, cols * 7.4)))
 
@@ -841,6 +898,37 @@ export const register: Register = on => {
       </Box>
     )
 
+    // Work in the background: each task's timer, and its latest action as proof it still works.
+    const bgLine = (b: BgTask) => {
+      if (b.status !== 'running') return `${b.status === 'done' ? 'Finished' : b.status === 'failed' ? 'Failed' : 'Stopped'}${b.actions ? ` · ${b.actions} actions` : ''}`
+      if (b.lastAt === undefined) return b.kind === 'shell' ? `Started ${clock(b.startedAt).slice(0, 5)}` : 'Starting'
+      return `${b.lastAction} · ${duration(now - b.lastAt)} ago · ${b.actions} actions`
+    }
+    const bgBlock = bg.length === 0 ? null : (
+      <Box key="bg" flexDirection="column" marginTop={1}>
+        <Text bold>{bgRunning ? `Running in the background · ${bgRunning}` : 'Background work'}</Text>
+        {[...bg].reverse().map(b => {
+          const isRunning = b.status === 'running'
+          const isQuiet = isRunning && quietFor(b, now) > QUIET_AFTER
+          const color = isRunning ? PAL.now : b.status === 'done' ? PAL.done : b.status === 'failed' ? PAL.failed : PAL.waiting
+          return (
+            <Box key={`bg-${b.id}`} flexDirection="column">
+              <Box flexDirection="row" justifyContent="space-between" gap={1}>
+                <Text wrap="truncate-end" bold={isRunning} dimColor={!isRunning}>
+                  <Text color={color}>{isRunning ? '●' : b.status === 'done' ? '✓' : b.status === 'failed' ? '✕' : '■'} </Text>
+                  {b.kind === 'shell' ? 'Command: ' : ''}{b.title}
+                </Text>
+                <Text dimColor tabular>{duration((b.endedAt ?? now) - b.startedAt)}</Text>
+              </Box>
+              <Text wrap="truncate-end" dimColor={!isQuiet} color={isQuiet ? TONE.slow : undefined}>
+                {'  '}{bgLine(b)}{isQuiet ? ' · quiet for a while' : ''}
+              </Text>
+            </Box>
+          )
+        })}
+      </Box>
+    )
+
     // Where the time went, step by step: done steps with how long they took, the one now with its running time.
     const stepsList = (steps: Step[]) => {
       if (steps.length === 0) return null
@@ -1100,6 +1188,7 @@ export const register: Register = on => {
       return (
         <Box flexDirection="column">
           {header}
+          {bgBlock}
           {resumeCard}
           <Box flexDirection="column" marginTop={1}>
             <Text bold>Ready when you are</Text>
@@ -1115,6 +1204,7 @@ export const register: Register = on => {
         <Box flexDirection="column">
           {header}
           {card}
+          {bgBlock}
           {planBlock}
           {script}
           {activityToggle}
@@ -1127,8 +1217,13 @@ export const register: Register = on => {
         <Box flexDirection="column">
           {header}
           <Box key="finished" flexDirection="column" marginTop={1}>
-            <Text bold color={PAL.done}>Task finished · {duration(t.endedAt - t.startedAt)}</Text>
+            {bgRunning ? (
+              <Text bold color={PAL.now}>Waiting on background work · Claude's turn took {duration(t.endedAt - t.startedAt)}</Text>
+            ) : (
+              <Text bold color={PAL.done}>Task finished · {duration(t.endedAt - t.startedAt)}</Text>
+            )}
           </Box>
+          {bgBlock}
           {resumeCard}
           {summaryCard}
           {ring(p.steps, p.title || 'Progress')}
@@ -1148,6 +1243,7 @@ export const register: Register = on => {
         {header}
         {ring(p.steps, p.title || 'Progress')}
         {narrationBlock}
+        {bgBlock}
         {stepsList(p.steps)}
         {script}
         {cpBlock}

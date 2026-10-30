@@ -2,6 +2,14 @@
 
 This file tells about the changes in each version of the Live panel.
 
+## 1.6.0 (2026-10-30)
+
+### Added
+
+- Running in the background. The panel shows each helper and each command that Claude starts in the background. Each one has a timer and its latest action, with how long ago that action was and the number of actions. This shows that the work continues while Claude waits. When a task has no new action for 5 minutes, its line changes color.
+- When Claude's turn ends but background work continues, the panel shows "Waiting on background work", not "Task finished".
+- A finished background task stays in the list for 15 minutes with its result: Finished, Failed or Stopped.
+
 ## 1.5.0 (2026-10-27)
 
 ### Added

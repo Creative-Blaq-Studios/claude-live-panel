@@ -19,6 +19,7 @@ Refer to [CHANGELOG.md](CHANGELOG.md) for the changes in each version.
 | Questions | The questions that Claude asks you. When there are several, each question has a tab. Push an answer button or type an answer, then push Send answers. |
 | Progress | A ring that shows how much of the task is done. It also shows the time spent, the time left, the current step and the next step. |
 | Claude's updates | What Claude does now, in plain words. A short update in Claude's words comes when the step changes, or about one time each minute. |
+| Running in the background | Each helper and command that Claude started in the background, with a timer and its latest action. When Claude's turn ends but this work continues, the panel shows Waiting on background work. |
 | Steps | Each step of the task with the time it took. |
 | Where Claude worked | The files that Claude created, edited or read. Click a file to see the actions on that file. |
 | Activity | A bar that shows how Claude used the last 10 minutes. It also shows the latest actions. |

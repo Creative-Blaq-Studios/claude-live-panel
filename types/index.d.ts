@@ -34,6 +34,24 @@ export type Call = {
   output?: string
 }
 
+export type BgStatus = 'running' | 'done' | 'failed' | 'stopped'
+
+/** Work Claude started in the background and waits on: a helper (subagent or workflow agent) or a command. */
+export type BgTask = {
+  id: string
+  kind: 'agent' | 'shell'
+  title: string
+  startedAt: number
+  status: BgStatus
+  endedAt?: number
+  /** Its latest action in plain words, and when: the proof that it is still working. */
+  lastAction?: string
+  lastAt?: number
+  actions: number
+  /** A background command's own id, as its notification names it. */
+  shellId?: string
+}
+
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 /** The model and effort level of Claude's latest request, as actually sent. */
@@ -126,6 +144,7 @@ declare module 'claude-code' {
       resume: Checkpoint | null
       narration: Narration[]
       narrateOn: boolean
+      background: BgTask[]
     }
   }
 }
