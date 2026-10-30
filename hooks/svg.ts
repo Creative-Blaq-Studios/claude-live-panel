@@ -7,7 +7,7 @@ const STATUS = { done: 'done', active: 'running now', failed: 'failed', pending:
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
-const STYLE = `<style>@media (prefers-reduced-motion:reduce){animate,animateTransform{display:none}}</style>`
+const STYLE = `<style>@media (prefers-reduced-motion:reduce){animate{display:none}}</style>`
 
 /**
  * Bars are drawn this wide and stretch across: the surface fits them to the panel's width.
@@ -72,10 +72,16 @@ export function ringSvg(steps: Step[], size: number): { source: string; alt: str
   return { source: s, alt: `${done} of ${steps.length} steps done${now ? `; now on: ${now.title}` : ''}` }
 }
 
-/** An arc that turns round its ring while work goes on with no end to measure (still in motion where motion is reduced). */
-const spinner = (mid: number, r: number, c: number, color: string, stroke: number, seconds: number) =>
-  `<circle cx="${mid}" cy="${mid}" r="${r.toFixed(1)}" fill="none" stroke="${color}" stroke-width="${stroke}" stroke-linecap="round" stroke-dasharray="${(c * 0.24).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 ${mid} ${mid})">` +
-  `<animateTransform attributeName="transform" type="rotate" from="-90 ${mid} ${mid}" to="270 ${mid} ${mid}" dur="${seconds}s" repeatCount="indefinite"/></circle>`
+/**
+ * An arc that goes round its ring while work goes on with no end to measure. Its place comes from the
+ * clock (`at`, in degrees), not from an animation: the panel draws again each second, and a surface
+ * that makes the picture again would start an animation over each time, which shows as a flicker.
+ */
+const spinner = (mid: number, r: number, c: number, color: string, stroke: number, at: number) =>
+  `<circle cx="${mid}" cy="${mid}" r="${r.toFixed(1)}" fill="none" stroke="${color}" stroke-width="${stroke}" stroke-linecap="round" stroke-dasharray="${(c * 0.24).toFixed(1)} ${c.toFixed(1)}" transform="rotate(${((at % 360) - 90).toFixed(1)} ${mid} ${mid})"/>`
+
+/** Where a turning arc stands at `now`: one step each second, a full turn every `seconds`. */
+export const spinAt = (now: number, seconds: number) => (Math.floor(now / 1000) % seconds) * (360 / seconds)
 
 /** The largest font size, up to 12, at which a line of `chars` letters fits `width`. */
 const fitFont = (chars: number, width: number) => Math.max(8, Math.min(12, Math.floor(width / (Math.max(1, chars) * 0.58))))
@@ -86,7 +92,7 @@ const fitFont = (chars: number, width: number) => Math.max(8, Math.min(12, Math.
  * under it, sized to fit inside the ring.
  */
 export function dialSvg(
-  dial: { fraction: number; time: string; note: string; color: string; track: string; tick: string; ink: string; muted: string; knob: string; spin?: boolean },
+  dial: { fraction: number; time: string; note: string; color: string; track: string; tick: string; ink: string; muted: string; knob: string; spin?: number },
   size: number,
 ): { source: string; alt: string } {
   const mid = size / 2
@@ -101,8 +107,8 @@ export function dialSvg(
   let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${STYLE}`
   s += `<circle cx="${mid}" cy="${mid}" r="${outer.toFixed(1)}" fill="none" stroke="${dial.tick}" stroke-width="5" stroke-linecap="round" stroke-dasharray="1.5 ${(ticks / 60 - 1.5).toFixed(2)}"/>`
   s += `<circle cx="${mid}" cy="${mid}" r="${r.toFixed(1)}" fill="none" stroke="${dial.track}" stroke-width="11"/>`
-  if (dial.spin) {
-    s += spinner(mid, r, c, dial.color, 11, 2.4)
+  if (dial.spin !== undefined) {
+    s += spinner(mid, r, c, dial.color, 11, dial.spin)
   } else if (share > 0) {
     s += `<circle cx="${mid}" cy="${mid}" r="${r.toFixed(1)}" fill="none" stroke="${dial.color}" stroke-width="11" stroke-linecap="round" stroke-dasharray="${(share * c).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 ${mid} ${mid})"/>`
     s += `<circle cx="${(mid + r * Math.cos(angle)).toFixed(1)}" cy="${(mid + r * Math.sin(angle)).toFixed(1)}" r="6.5" fill="${dial.knob}" stroke="${dial.color}" stroke-width="4"/>`
@@ -114,15 +120,15 @@ export function dialSvg(
   return { source: s, alt: `${dial.time}, ${dial.note}` }
 }
 
-/** A small ring for a running background task: an arc that turns while it works. */
-export function miniRingSvg(color: string, track: string, size: number): { source: string; alt: string } {
+/** A small ring for a running background task: an arc that goes round while it works (`at`, in degrees). */
+export function miniRingSvg(color: string, track: string, size: number, at: number): { source: string; alt: string } {
   const mid = size / 2
   const stroke = 3.5
   const r = mid - stroke
   const c = 2 * Math.PI * r
-  let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${STYLE}`
+  let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">`
   s += `<circle cx="${mid}" cy="${mid}" r="${r.toFixed(1)}" fill="none" stroke="${track}" stroke-width="${stroke}"/>`
-  s += spinner(mid, r, c, color, stroke, 1.4)
+  s += spinner(mid, r, c, color, stroke, at)
   s += '</svg>'
 
   return { source: s, alt: '' }

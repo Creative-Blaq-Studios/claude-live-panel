@@ -3,6 +3,7 @@ import type { TestBody } from 'claude-code/testing'
 
 import { everyLabel, isAutosaveDue, isTaskFinished, lastManual, namedOption, parseEvery, pruneSaved, replacedAutos } from '../hooks/checkpoints'
 import { sessionLength, sessionLine } from '../hooks/model'
+import { dialSvg, miniRingSvg, spinAt } from '../hooks/svg'
 import type { Checkpoint } from '../types'
 
 const PANE = {
@@ -450,4 +451,31 @@ test('after a turn, the dial keeps counting while its background work runs, and 
     if (surface === 'terminal') expect(await ui.find({ text: /^in background$/ })).toBeDefined()
     await ui.unmount()
   }
+})
+
+test('after a turn, Stop asks Claude to stop the background work, naming each task', async ($, on) => {
+  engine(on, { autosave: 0 })
+  on('agent.spawn', async () => ({ model: 'claude-opus-5-5', agentId: 'ag1' }) as never)
+  const sent: string[] = []
+  on('prompt.submit', (_, e) => (sent.push(e.text), { text: e.text }) as never)
+  await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'Go', turnId: 't1' })
+  await $.agent.spawn({ prompt: 'Implement Task 5', description: 'Implement Task 5', background: true } as never)
+  await $.turn.complete({ answer: 'Task 5 runs in the background.', durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'vscode' })
+  expect(await ui.find({ key: 'dial-pause' } as never)).toBeDefined()
+  await ui.press({ key: 'dial-stop' })
+  await ui.unmount()
+  expect(sent).toEqual(['Stop the background work now: "Implement Task 5" (helper ag1). Then tell me where things stand.'])
+})
+
+test('turning arcs take their place from the clock, with no animation a redraw could restart', async () => {
+  expect(spinAt(0, 12)).toBe(0)
+  expect(spinAt(1_000, 12)).toBe(30)
+  expect(spinAt(12_000, 12)).toBe(0)
+  const dial = dialSvg({ fraction: 0, time: '10:25', note: 'in background', color: '#E08A63', track: '#333', tick: '#555', ink: '#FFF', muted: '#AAA', knob: '#222', spin: 30 }, 180)
+  const ring = miniRingSvg('#E08A63', '#333', 24, 90)
+  for (const svg of [dial.source, ring.source]) expect(svg).not.toMatch(/<animate/)
+  expect(dial.source).toMatch(/rotate\(-60\.0 90 90\)/)
 })

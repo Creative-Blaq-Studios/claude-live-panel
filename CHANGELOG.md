@@ -2,6 +2,17 @@
 
 This file tells about the changes in each version of the Live panel.
 
+## 1.8.7 (2026-10-31)
+
+### Fixed
+
+- The turning arcs in the dial and in Running in the background flickered, mostly in VS Code. The panel draws again each second, and the animation started again each time. Now the place of the arc comes from the clock: it moves one step each second and does not flicker.
+- In VS Code, the names of the folding sections showed as filled buttons. Now they are quiet.
+
+### Added
+
+- Pause and Stop when Claude's turn ended but background work continues. The plugin cannot stop a background task itself, so Stop sends Claude a message that asks it to stop each task by name. Pause saves a checkpoint first, then sends the same message.
+
 ## 1.8.6 (2026-10-31)
 
 ### Fixed

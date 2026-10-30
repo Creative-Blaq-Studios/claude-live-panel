@@ -53,7 +53,7 @@ import {
   steClean,
   timeLeft,
 } from './model'
-import { activitySvg, BAR_WIDTH, dialSvg, miniRingSvg, railSvg, segmentsSvg } from './svg'
+import { activitySvg, BAR_WIDTH, dialSvg, miniRingSvg, railSvg, segmentsSvg, spinAt } from './svg'
 import type { ThemeName } from './theme'
 import { APP, DARK, LIGHT, themeFrom } from './theme'
 
@@ -295,6 +295,24 @@ async function settleFromReply($: EngineInterface, text: string): Promise<void> 
     await settle($, cp.id)
     $.ui.toast(`Marked as decided in the chat: ${clip(pending[0]?.question ?? 'the decision left for later', 90)}`)
   }
+}
+
+/**
+ * The panel cannot stop a background helper or command itself (the plugin API ends only Claude's own
+ * turn): it asks Claude to, naming each one, as the person's message.
+ */
+async function askToStopBackground($: EngineInterface): Promise<void> {
+  const running = (await read($, background)).filter(b => b.status === 'running')
+  if (running.length === 0) return
+  const names = running.map(b => `"${b.title}" (${b.kind === 'shell' ? `command ${b.shellId ?? b.id}` : `helper ${b.id}`})`).join(', ')
+  await send($, `Stop the background work now: ${names}. Then tell me where things stand.`)
+}
+
+/** Pause after a turn: save a checkpoint of where things stand, then ask Claude to stop the background work. */
+async function pauseBackground($: EngineInterface): Promise<void> {
+  $.ui.toast('Saving a checkpoint, then asking Claude to stop the background work.')
+  await saveCheckpoint($, false)
+  await askToStopBackground($)
 }
 
 /** Leaves Claude's question open: saves a checkpoint that keeps it, to decide in this session or the next. */
@@ -1072,7 +1090,7 @@ export const register: Register = on => {
             ink: k.ink ?? '#1E1C1A',
             muted: k.muted ?? '#5F5A54',
             knob: k.surface ?? '#FFFFFF',
-            spin: isStillWorking,
+            spin: isStillWorking ? spinAt(now, 12) : undefined,
           },
           dialSize,
         )
@@ -1097,7 +1115,9 @@ export const register: Register = on => {
         <Box flexDirection="row" gap={1} justifyContent="center" flexWrap="wrap">
           {t.isRunning ? <Button key="dial-pause" dimColor={isVscode} onPress={() => saveCheckpoint($, true)}>Pause</Button> : null}
           {t.isRunning ? <Button key="dial-stop" variant="primary" onPress={stop}>Stop</Button> : null}
-          <Button key="dial-save" dimColor={isVscode} onPress={() => saveCheckpoint($, false)}>{t.isRunning ? 'Save' : 'Save checkpoint'}</Button>
+          {isStillWorking ? <Button key="dial-pause" dimColor={isVscode} onPress={() => pauseBackground($)}>Pause</Button> : null}
+          {isStillWorking ? <Button key="dial-stop" variant="primary" onPress={() => askToStopBackground($)}>Stop</Button> : null}
+          <Button key="dial-save" dimColor={isVscode} onPress={() => saveCheckpoint($, false)}>{t.isRunning || isStillWorking ? 'Save' : 'Save checkpoint'}</Button>
         </Box>
       </Box>
     ) : null
@@ -1166,7 +1186,7 @@ export const register: Register = on => {
           const isRunning = b.status === 'running'
           const isQuiet = isRunning && quietFor(b, now) > QUIET_AFTER
           const color = isRunning ? (isQuiet ? k.quiet : b.kind === 'shell' ? k.done : k.accent) : b.status === 'done' ? k.done : b.status === 'failed' ? k.failed : k.line
-          const ring = Svg && isRunning ? miniRingSvg(color, k.track, 24) : undefined
+          const ring = Svg && isRunning ? miniRingSvg(color, k.track, 24, spinAt(now, 8)) : undefined
           // The timer sits on the title's line, so a long action line under it never pushes it down.
           return (
             <Box key={`bg-${b.id}`} flexDirection="row" gap={1} alignItems="flex-start">
@@ -1233,7 +1253,7 @@ export const register: Register = on => {
       return (
         <Box key={`sec-${id}`} flexDirection="column" paddingX={2} borderStyle="round" borderColor={isOpen ? u.accent : u.line}>
           <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1} paddingY={1}>
-            <Button key={`sec-${id}-toggle`} plain onPress={() => toggleSection($, id)}>{isOpen ? '▾' : '▸'}  {title}</Button>
+            <Button key={`sec-${id}-toggle`} plain dimColor={isVscode} onPress={() => toggleSection($, id)}>{isOpen ? '▾' : '▸'}  {title}</Button>
             <Button key={`sec-${id}-note`} plain dimColor onPress={() => toggleSection($, id)}>{note}</Button>
           </Box>
           {isOpen ? <Box flexDirection="column" gap={1} paddingBottom={1}>{body()}</Box> : null}
