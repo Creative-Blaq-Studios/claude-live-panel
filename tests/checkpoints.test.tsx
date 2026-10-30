@@ -325,3 +325,20 @@ test('no button, menu or text field sits on a painted card, in either look', asy
   expect(controlsOnPaint((await ui.drawn()) as unknown as Node)).toEqual([])
   await ui.unmount()
 })
+
+test('after a turn, the dial tells when it ended and the steps done, without repeating the status line', async ($, on) => {
+  engine(on, { autosave: 0 })
+  await $.session.start({ cwd: '/work/app', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'Go', turnId: 't1' })
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: [{ content: 'Build the dial', status: 'completed' }, { content: 'Ship it', status: 'in_progress' }] } as never)
+  await $.turn.complete({ answer: 'Done for now.', durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer' })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(await ui.find({ text: /^ended \d\d:\d\d$/ })).toBeDefined()
+    expect(await ui.find({ text: /50% done · 1 of 2 steps/ })).toBeDefined()
+    expect(await ui.find({ text: /Task finished/ })).toBeUndefined()
+    expect(await ui.find({ text: /Step 2 of 2/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})

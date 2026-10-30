@@ -85,7 +85,7 @@ const sessionStart = atom({ plugin: 'live-view', key: 'sessionStart' } as const,
 const autosave = atom({ plugin: 'live-view', key: 'autosave' } as const, DEFAULT_AUTOSAVE)
 const themeChoice = atom({ plugin: 'live-view', key: 'themeChoice' } as const, '' as '' | ThemeName)
 const appTheme = atom({ plugin: 'live-view', key: 'appTheme' } as const, 'dark' as ThemeName)
-const openSections = atom({ plugin: 'live-view', key: 'openSections' } as const, ['steps'] as string[])
+const openSections = atom({ plugin: 'live-view', key: 'unfolded' } as const, ['steps'] as string[])
 
 // Automatic checkpoints: one at a time, and a try that failed waits a whole interval before the next.
 let loadedAt = 0
@@ -1004,9 +1004,12 @@ export const register: Register = on => {
     const nextStep = p.steps.find((s, i) => i > activeAt && s.status === 'pending')
     const where = places(list)
     const changedCount = where.filter(pl => pl.creates + pl.edits > 0).length
-    const fraction = state === 'finished' ? 1 : left !== undefined ? turnMs / Math.max(1, turnMs + left) : p.steps.length ? doneSteps / p.steps.length : 0
-    const dialNote = state === 'finished' ? (bgRunning ? 'waiting on background work' : 'finished') : left !== undefined ? `about ${duration(left)} left` : 'this turn'
-    const stepNote = p.steps.length ? (active ? `Step ${activeAt + 1} of ${p.steps.length}` : `${doneSteps} of ${p.steps.length} steps`) : ''
+    // A finished turn's ring shows the share of the steps done, which the progress line under it names too.
+    const stepShare = p.steps.length ? doneSteps / p.steps.length : 1
+    const fraction = state === 'finished' ? stepShare : left !== undefined ? turnMs / Math.max(1, turnMs + left) : p.steps.length ? stepShare : 0
+    const dialNote = state === 'finished' ? (bgRunning ? 'waiting on background work' : 'turn finished') : left !== undefined ? `about ${duration(left)} left` : 'this turn'
+    const stepNote =
+      state === 'finished' ? `ended ${clock(t.endedAt).slice(0, 5)}` : p.steps.length ? (active ? `Step ${activeAt + 1} of ${p.steps.length}` : `${doneSteps} of ${p.steps.length} steps`) : ''
     const progressNote = [
       p.steps.length ? `${Math.round((doneSteps / p.steps.length) * 100)}% done` : '',
       p.steps.length ? `${doneSteps} of ${p.steps.length} steps` : '',
@@ -1014,7 +1017,7 @@ export const register: Register = on => {
     ].filter(Boolean).join(' · ')
     const dialSize = Math.min(210, Math.max(150, Math.round(px * 0.55)))
     const drawnDial = Svg
-      ? dialSvg({ fraction, time: clockTime(turnMs), note: dialNote, color: state === 'finished' ? k.done : k.accent, track: k.track, tick: k.tick, ink: k.ink ?? '#1E1C1A', muted: k.muted ?? '#5F5A54', knob: k.surface ?? '#FFFFFF' }, dialSize)
+      ? dialSvg({ fraction, time: clockTime(turnMs), note: dialNote, color: state === 'finished' && stepShare >= 1 ? k.done : k.accent, track: k.track, tick: k.tick, ink: k.ink ?? '#1E1C1A', muted: k.muted ?? '#5F5A54', knob: k.surface ?? '#FFFFFF' }, dialSize)
       : undefined
     const dial = t.startedAt && state !== 'ask' ? (
       <Box key="dial" flexDirection="column" marginTop={2} gap={1}>
@@ -1460,13 +1463,11 @@ export const register: Register = on => {
       return (
         <Box flexDirection="column">
           {header}
-          <Box key="finished" flexDirection="column" marginTop={2}>
-            {bgRunning ? (
+          {bgRunning ? (
+            <Box key="finished" flexDirection="column" marginTop={2}>
               <Text bold color={u.accent}>Waiting on background work · Claude's turn took {duration(t.endedAt - t.startedAt)}</Text>
-            ) : (
-              <Text bold color={u.done}>Task finished · {duration(t.endedAt - t.startedAt)}</Text>
-            )}
-          </Box>
+            </Box>
+          ) : null}
           {summaryCard}
           {resumeCard}
           {dial}

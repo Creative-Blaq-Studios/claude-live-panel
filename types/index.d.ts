@@ -156,7 +156,7 @@ declare module 'claude-code' {
       /** The look that matches their Claude Code theme setting. */
       appTheme: 'light' | 'dark'
       /** The folding sections that are open: steps, checkpoints, files, activity. */
-      openSections: string[]
+      unfolded: string[]
     }
   }
 }

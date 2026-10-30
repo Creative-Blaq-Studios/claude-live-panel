@@ -2,6 +2,16 @@
 
 This file tells about the changes in each version of the Live panel.
 
+## 1.8.2 (2026-10-31)
+
+### Fixed
+
+- Steps did not open at first after an update from 1.8.0. Now it does.
+- After a turn, the ring was full even when not all of the steps were done. Now the ring shows the part of the steps that is done.
+- After a turn, the dial card showed the current step, for example "Step 4 of 4". Now it shows when the turn ended.
+- The dial and the status line showed different times for the same turn, for example 0:06 and 7s. Now both round to the nearest second.
+- "Task finished" repeated the status line. Now that line shows only when background work continues.
+
 ## 1.8.1 (2026-10-31)
 
 ### Fixed

@@ -18,9 +18,9 @@ export function duration(ms: number): string {
   return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`
 }
 
-/** A stopwatch reading: "4:23", "18:40", "1:02:05". */
+/** A stopwatch reading, to the nearest second like `duration`: "4:23", "18:40", "1:02:05". */
 export function clockTime(ms: number): string {
-  const s = Math.max(0, Math.floor(ms / 1000))
+  const s = Math.max(0, Math.round(ms / 1000))
   const mm = String(Math.floor((s % 3600) / 60))
   const ss = String(s % 60).padStart(2, '0')
   return s < 3600 ? `${mm}:${ss}` : `${Math.floor(s / 3600)}:${mm.padStart(2, '0')}:${ss}`
